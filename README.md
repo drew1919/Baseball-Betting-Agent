@@ -1,104 +1,97 @@
 # Baseball Gambling Agent
 
-A baseball betting analysis web app that combines real-time MLB data scraping, Statcast statistics, and a logistic regression model to generate betting insights for game winners, NRFI/YRFI, and pitcher strikeout props.
+A baseball betting analysis app that combines current MLB data, Statcast expected statistics, recency-aware features, and a self-evaluating logistic regression layer. It produces game-winner, NRFI/YRFI, and pitcher strikeout recommendations without a paid language-model API.
 
-## Features
+## Model Inputs
 
-- **Live data scraping** — lineups, probable pitchers, and betting odds pulled from public sources
-- **Statcast analytics** — xwOBA, barrel rate, whiff%, K%, and more for batters and pitchers
-- **ML predictions** — logistic regression model trained on historical game features (auto-updates daily)
-- **Bet type analysis** — General, NRFI/YRFI, Pitcher K Props, Game Winner
-- **Web UI** — dark-themed interface, game selector, and instant analysis
+The August winner heuristic uses this 100% core weighting:
+
+- Offense: 37%
+- Confirmed starting pitcher: 20%
+- Bullpen: 10%
+- Recent team form: 16%
+- Baseball Reference win-probability impact: 10%
+- Defense: 5%
+- Park factor: 2%
+
+Total pitching stays at 30%. The bullpen share is 7% in April-May, 9% in June-July, 10% in August, and 12% in September-October; starter weight moves inversely.
+
+Player form blends current-season expected statistics with measured MLB performance from the last 30 days. Recent samples are shrunk toward the season baseline when plate appearances or batters faced are small. Team form uses exponentially decayed results from the last ten games instead of overlapping last-1, last-3, and last-5 totals.
+
+Bullpen ratings use official MLB season statistics, 14-day performance, and three-day pitch workload. The bullpen rating is also stored as its own regression feature so future game results can determine whether it improves out-of-sample accuracy.
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org/) 18 or later
-- npm (included with Node.js)
+- Node.js 22 or later (the project uses `node:sqlite`)
+- npm
 
 ## Setup
 
 ```bash
-# 1. Clone the repo
 git clone <your-repo-url>
 cd baseball-gambling-agent
-
-# 2. Install dependencies
 npm install
-
-# 3. Configure environment
 cp .env.example .env
-# Edit .env if you want live odds (ODDS_API_KEY) — everything else works without it
 ```
 
 ## Running
 
 ```bash
-# Development (hot reload)
+# Development with hot reload
 npm run dev
 
-# Production (compiles TypeScript, then runs)
+# Production build and start
 npm start
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+Open [http://localhost:3000](http://localhost:3000).
 
 ## Environment Variables
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `PORT` | No | `3000` | Port the server listens on |
-| `ODDS_API_KEY` | No | — | [The-Odds-API](https://the-odds-api.com) key for live lines |
-| `ODDS_BOOKMAKER` | No | `fanduel` | Bookmaker to pull odds from |
-| `EXPECTED_BATTERS_CSV_PATH` | No | — | Path to a Baseball Savant batter CSV export |
-| `EXPECTED_PITCHERS_CSV_PATH` | No | — | Path to a Baseball Savant pitcher CSV export |
+| `PORT` | No | `3000` | HTTP port |
+| `ODDS_API_KEY` | No | None | The-Odds-API key for live lines |
+| `ODDS_BOOKMAKER` | No | `fanduel` | Preferred bookmaker |
+| `EXPECTED_BATTERS_CSV_PATH` | No | `data/expected_stats_batters.csv` | Optional custom expected-stat CSV path |
+| `EXPECTED_PITCHERS_CSV_PATH` | No | `data/expected_stats_pitchers.csv` | Optional custom expected-stat CSV path |
 
-The app runs fully without any API keys — live odds are disabled but all analysis still works.
+The analysis engine runs without API keys. Live odds are omitted when `ODDS_API_KEY` is not configured.
 
-## Data
+## Refresh Behavior
 
-A `data/` directory is created automatically on first run. It stores:
-- `app.db` — SQLite database with game features and results
-- `game-features.jsonl` / `game-results.jsonl` — historical snapshots used to train the model
+- A full refresh runs at startup and daily at 06:05 in the server's local timezone.
+- `/api/chat` triggers a guarded refresh when model data is older than eight hours or expected-stat CSVs are stale.
+- Failed refreshes are throttled and retain the last known-good files.
+- Expected-stat files are validated for minimum coverage and replaced atomically; empty scraper output cannot overwrite good data.
+- Source attempts, successes, row counts, errors, ages, and stale flags are exposed through `/api/health`.
 
-This directory is excluded from git. The ML model improves over time as it collects more game results.
+On Oracle, confirm the VM timezone if 06:05 must correspond to a specific local time.
 
-## Project Structure
+## Persistent Data
 
-```
-src/
-  index.ts            # Express server and API routes
-  page.ts             # HTML/CSS frontend template
-  stats.ts            # Built-in Statcast dataset
-  augmented-stats.ts  # Feature engineering
-  feature-store.ts    # SQLite read/write helpers
-  regression-trainer.ts  # Logistic regression training
-  model-evaluator.ts  # Accuracy, log loss, Brier score
-  regression-types.ts # TypeScript types
-  results-fetcher.ts  # MLB results from statsapi.mlb.com
-public/
-  app.js              # Frontend JavaScript
-```
+The ignored `data/` directory contains the SQLite database and regenerated source files. `data/app.db` is the source of truth for historical feature snapshots, results, and model artifacts. Keep this directory on persistent Oracle storage and back it up before server migrations.
 
 ## API Endpoints
 
 | Endpoint | Description |
 |---|---|
-| `GET /api/health` | App status and model info |
+| `GET /api/health` | Model weights, coverage, source freshness, storage, and refresh status |
 | `GET /api/lineups` | Today's lineups and probable pitchers |
 | `GET /api/schedule` | MLB schedule |
-| `GET /api/odds` | Betting odds (requires ODDS_API_KEY) |
-| `GET /api/sources` | Raw scraped data from all sources |
-| `POST /api/chat` | Analysis endpoint (body: `{ message, betType, gameCtx }`) |
-| `POST /api/regression/refresh` | Re-train the prediction model |
-| `GET /api/regression/report` | Model performance metrics |
+| `GET /api/odds` | Betting odds when configured |
+| `GET /api/sources` | Public-source scrape summaries |
+| `GET /api/stats` | Current merged player dataset and coverage |
+| `POST /api/chat` | Local analysis endpoint |
+| `POST /api/data/refresh` | Manually run the full data refresh |
+| `POST /api/regression/refresh` | Refresh results and train/evaluate a candidate model |
+| `GET /api/regression/report` | Regression metrics and feature coverage |
 
-## Data Sources
+## Primary Sources
 
-All public, no authentication required:
-- MLB Schedule API
-- Baseball Savant (Statcast leaderboards, park factors)
-- RotoWire (daily lineups)
-- TeamRankings (run differential)
-- Baseball Reference (win probability)
-
-Live odds require a free [The-Odds-API](https://the-odds-api.com) key.
+- MLB Stats API: schedules, results, recent player form, defense, and bullpens
+- Baseball Savant: expected statistics, first-inning splits, and park factors
+- RotoWire: daily lineups
+- TeamRankings: season and venue run differential
+- Baseball Reference: batting and pitching win-probability impact
+- The-Odds-API: optional sportsbook lines

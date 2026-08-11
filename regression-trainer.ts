@@ -3,6 +3,7 @@ import type { LogisticRegressionModel, RegressionTrainingRow, WinnerFeatureSnaps
 const FEATURE_NAMES = [
   "offenseDiff",
   "pitchingDiff",
+  "bullpenDiff",
   "trendDiff",
   "winProbDiff",
   "defenseDiff",
@@ -29,6 +30,7 @@ export function buildRegressionTrainingRows(rows: Array<WinnerFeatureSnapshot & 
     ...row,
     offenseDiff: row.homeOffense - row.awayOffense,
     pitchingDiff: row.homePitching - row.awayPitching,
+    bullpenDiff: row.homeBullpen - row.awayBullpen,
     trendDiff: row.homeTrend - row.awayTrend,
     winProbDiff: row.homeWinProb - row.awayWinProb,
     defenseDiff: row.homeDefense - row.awayDefense,

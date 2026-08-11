@@ -54,6 +54,8 @@ export type AugmentedStats = {
     expectedPitchers: number;
     mergedBatters: number;
     mergedPitchers: number;
+    overriddenBatters: number;
+    overriddenPitchers: number;
   };
   sourceFiles: {
     batterCsvPath: string;
@@ -215,7 +217,9 @@ function readExpectedPitchers(filePath: string) {
 }
 
 function playerKey(value: { ["last_name, first_name"]: string; player_id: number }) {
-  return `${value.player_id}:${normalizeName(value["last_name, first_name"])}`;
+  return value.player_id > 0
+    ? `id:${value.player_id}`
+    : `name:${normalizeName(value["last_name, first_name"])}`;
 }
 
 function synthesizeBatter(row: ExpectedBatterRow): BatterStat {
@@ -364,25 +368,92 @@ export function getAugmentedStats(base: BaseStats): AugmentedStats {
   const expectedBatters = readExpectedBatters(batterPath);
   const expectedPitchers = readExpectedPitchers(pitcherPath);
 
-  const batterKeys = new Set(base.batters.map(playerKey));
-  const pitcherKeys = new Set(base.pitchers.map(playerKey));
-
-  const mergedBatters = [...base.batters];
-  const mergedPitchers = [...base.pitchers];
+  const batterByKey = new Map(base.batters.map((player) => [playerKey(player), player]));
+  const pitcherByKey = new Map(base.pitchers.map((player) => [playerKey(player), player]));
+  let overriddenBatters = 0;
+  let overriddenPitchers = 0;
 
   expectedBatters.forEach((row) => {
     const key = playerKey(row);
-    if (batterKeys.has(key)) return;
-    batterKeys.add(key);
-    mergedBatters.push(synthesizeBatter(row));
+    const existing = batterByKey.get(key);
+    const fresh = synthesizeBatter(row);
+    if (existing) {
+      overriddenBatters += 1;
+      // Expected-stat values and PA must stay fresh; retain measured fields that
+      // are absent from this narrower leaderboard until the live overlay loads.
+      batterByKey.set(key, {
+        ...fresh,
+        k_percent: existing.k_percent,
+        bb_percent: existing.bb_percent,
+        avg_swing_speed: existing.avg_swing_speed,
+        fast_swing_rate: existing.fast_swing_rate,
+        blasts_contact: existing.blasts_contact,
+        blasts_swing: existing.blasts_swing,
+        squared_up_contact: existing.squared_up_contact,
+        squared_up_swing: existing.squared_up_swing,
+        avg_swing_length: existing.avg_swing_length,
+        swords: existing.swords,
+        attack_angle: existing.attack_angle,
+        attack_direction: existing.attack_direction,
+        ideal_angle_rate: existing.ideal_angle_rate,
+        vertical_swing_path: existing.vertical_swing_path,
+        exit_velocity_avg: existing.exit_velocity_avg,
+        launch_angle_avg: existing.launch_angle_avg,
+        sweet_spot_percent: existing.sweet_spot_percent,
+        barrel_batted_rate: existing.barrel_batted_rate,
+        solidcontact_percent: existing.solidcontact_percent,
+        hard_hit_percent: existing.hard_hit_percent,
+        avg_best_speed: existing.avg_best_speed,
+        avg_hyper_speed: existing.avg_hyper_speed,
+        whiff_percent: existing.whiff_percent,
+        swing_percent: existing.swing_percent
+      });
+      return;
+    }
+    batterByKey.set(key, fresh);
   });
 
   expectedPitchers.forEach((row) => {
     const key = playerKey(row);
-    if (pitcherKeys.has(key)) return;
-    pitcherKeys.add(key);
-    mergedPitchers.push(synthesizePitcher(row));
+    const existing = pitcherByKey.get(key);
+    const fresh = synthesizePitcher(row);
+    if (existing) {
+      overriddenPitchers += 1;
+      pitcherByKey.set(key, {
+        ...fresh,
+        k_percent: existing.k_percent,
+        bb_percent: existing.bb_percent,
+        avg_swing_speed: existing.avg_swing_speed,
+        fast_swing_rate: existing.fast_swing_rate,
+        blasts_contact: existing.blasts_contact,
+        blasts_swing: existing.blasts_swing,
+        squared_up_contact: existing.squared_up_contact,
+        squared_up_swing: existing.squared_up_swing,
+        avg_swing_length: existing.avg_swing_length,
+        swords: existing.swords,
+        attack_angle: existing.attack_angle,
+        attack_direction: existing.attack_direction,
+        ideal_angle_rate: existing.ideal_angle_rate,
+        vertical_swing_path: existing.vertical_swing_path,
+        exit_velocity_avg: existing.exit_velocity_avg,
+        launch_angle_avg: existing.launch_angle_avg,
+        sweet_spot_percent: existing.sweet_spot_percent,
+        barrel_batted_rate: existing.barrel_batted_rate,
+        hard_hit_percent: existing.hard_hit_percent,
+        avg_best_speed: existing.avg_best_speed,
+        avg_hyper_speed: existing.avg_hyper_speed,
+        z_swing_percent: existing.z_swing_percent,
+        out_zone_swing_miss: existing.out_zone_swing_miss,
+        whiff_percent: existing.whiff_percent,
+        swing_percent: existing.swing_percent
+      });
+      return;
+    }
+    pitcherByKey.set(key, fresh);
   });
+
+  const mergedBatters = [...batterByKey.values()];
+  const mergedPitchers = [...pitcherByKey.values()];
 
   const value: AugmentedStats = {
     batters: mergedBatters,
@@ -393,7 +464,9 @@ export function getAugmentedStats(base: BaseStats): AugmentedStats {
       expectedBatters: expectedBatters.length,
       expectedPitchers: expectedPitchers.length,
       mergedBatters: mergedBatters.length,
-      mergedPitchers: mergedPitchers.length
+      mergedPitchers: mergedPitchers.length,
+      overriddenBatters,
+      overriddenPitchers
     },
     sourceFiles: {
       batterCsvPath: batterPath,
