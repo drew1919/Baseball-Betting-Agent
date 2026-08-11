@@ -76,8 +76,6 @@ type CacheEntry = {
 };
 
 let cache: CacheEntry | null = null;
-const LEGACY_BATTER_CSV_PATH = "C:\\Users\\dk7so\\Downloads\\expected_stats.csv";
-const LEGACY_PITCHER_CSV_PATH = "C:\\Users\\dk7so\\Downloads\\expected_stats (1).csv";
 const WORKSPACE_BATTER_CSV_PATH = path.join(process.cwd(), "data", "expected_stats_batters.csv");
 const WORKSPACE_PITCHER_CSV_PATH = path.join(process.cwd(), "data", "expected_stats_pitchers.csv");
 
@@ -320,11 +318,9 @@ function synthesizePitcher(row: ExpectedPitcherRow): PitcherStat {
   };
 }
 
-function resolveCsvPath(envKey: string, workspacePath: string, legacyPath: string) {
+function resolveCsvPath(envKey: string, workspacePath: string) {
   const envValue = process.env[envKey];
   if (cleanText(envValue)) return cleanText(envValue);
-  if (fs.existsSync(workspacePath)) return workspacePath;
-  if (fs.existsSync(legacyPath)) return legacyPath;
   return workspacePath;
 }
 
@@ -338,8 +334,8 @@ function fileStamp(filePath: string) {
 
 export function getExpectedStatsCsvPaths() {
   return {
-    batterPath: resolveCsvPath("EXPECTED_BATTERS_CSV_PATH", WORKSPACE_BATTER_CSV_PATH, LEGACY_BATTER_CSV_PATH),
-    pitcherPath: resolveCsvPath("EXPECTED_PITCHERS_CSV_PATH", WORKSPACE_PITCHER_CSV_PATH, LEGACY_PITCHER_CSV_PATH)
+    batterPath: resolveCsvPath("EXPECTED_BATTERS_CSV_PATH", WORKSPACE_BATTER_CSV_PATH),
+    pitcherPath: resolveCsvPath("EXPECTED_PITCHERS_CSV_PATH", WORKSPACE_PITCHER_CSV_PATH)
   };
 }
 
