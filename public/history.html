@@ -209,6 +209,7 @@
   .badge.correct { background: var(--green-dim); color: var(--green); }
   .badge.incorrect { background: var(--red-dim); color: var(--red); }
   .badge.pending { background: var(--amber-dim); color: var(--amber); }
+  .badge.stale { background: rgba(148, 163, 184, 0.14); color: #94a3b8; }
 
   .badge::before {
     content: '';
@@ -333,9 +334,15 @@
 
     const resultBadge = game.status === 'pending'
       ? `<span class="badge pending">PENDING</span>`
-      : game.correct
-        ? `<span class="badge correct">HIT</span>`
-        : `<span class="badge incorrect">MISS</span>`;
+      : game.status === 'stale'
+        ? `<span class="badge stale">STALE SLATE</span>`
+        : game.correct
+          ? `<span class="badge correct">HIT</span>`
+          : `<span class="badge incorrect">MISS</span>`;
+
+    const finalScore = game.finalScore
+      ? `${game.finalScore}${game.status === 'stale' && game.resultDate ? ` (${game.resultDate})` : ''}`
+      : '—';
 
     const marketCell = game.marketLean
       ? game.marketLean === game.predictedWinner
@@ -348,7 +355,7 @@
       <td class="matchup">${game.away}<span class="at">@</span>${game.home}</td>
       <td><span class="pick-chip">${game.predictedWinner || '—'}</span></td>
       <td>${resultBadge}</td>
-      <td class="num-cell">${game.finalScore || '—'}</td>
+      <td class="num-cell">${finalScore}</td>
       <td class="num-cell">${game.edge !== null && game.edge !== undefined ? game.edge.toFixed(1) : '—'}</td>
       <td class="num-cell">${game.confidence !== null && game.confidence !== undefined ? game.confidence.toFixed(0) : '—'}</td>
       <td>${marketCell}</td>
@@ -374,7 +381,9 @@
 
       document.getElementById('heuristicAccuracy').textContent = fmtPct(data.summary.accuracy);
       document.getElementById('heuristicSub').textContent =
-        data.summary.gradedCount ? `${data.summary.correctCount}/${data.summary.gradedCount} graded · ${data.summary.pendingCount} pending` : 'no graded picks yet';
+        data.summary.gradedCount
+          ? `${data.summary.correctCount}/${data.summary.gradedCount} graded · ${data.summary.pendingCount} pending · ${data.summary.staleCount || 0} stale excluded`
+          : `no graded picks yet · ${data.summary.pendingCount} pending · ${data.summary.staleCount || 0} stale excluded`;
 
       document.getElementById('marketAccuracy').textContent = fmtPct(data.summary.marketAccuracy);
       document.getElementById('marketSub').textContent =

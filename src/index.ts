@@ -362,6 +362,17 @@ function cleanText(value = "") {
   return String(value).replace(/\s+/g, " ").trim();
 }
 
+function mlbCalendarDate(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${value.year}-${value.month}-${value.day}`;
+}
+
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -1653,16 +1664,25 @@ function parseRotoWireGames(html: string) {
 }
 
 async function loadDailyLineups() {
-  const html = await fetchHtml(ROTOWIRE_LINEUPS_URL);
+  const [html, schedule] = await Promise.all([fetchHtml(ROTOWIRE_LINEUPS_URL), loadSchedule()]);
+  const scheduleKeys = new Set(schedule.games.map((game) => {
+    const away = resolveTeamKey(game.away);
+    const home = resolveTeamKey(game.home);
+    return away && home ? `${away}_${home}` : "";
+  }).filter(Boolean));
+  const parsedGames = parseRotoWireGames(html);
+  const games = parsedGames.filter((game) => scheduleKeys.has(`${game.away}_${game.home}`));
   return {
     source: ROTOWIRE_LINEUPS_URL,
     scrapedAt: new Date().toISOString(),
-    games: parseRotoWireGames(html)
+    slateDate: mlbCalendarDate(),
+    discardedStaleGames: parsedGames.length - games.length,
+    games
   };
 }
 
 async function loadSchedule() {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = mlbCalendarDate();
   const res = await fetch(`https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${today}`, {
     headers: {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
@@ -2367,7 +2387,7 @@ async function runMorningRefresh(reason: "startup" | "scheduled" | "stale" | "ma
 
     try {
       const payload = await loadDailyLineups();
-      const snapshotDate = new Date().toISOString().slice(0, 10);
+      const snapshotDate = mlbCalendarDate();
       const matchedGames = payload.games.map((game) => matchGameCard(game));
       await snapshotWinnerFeaturesForGames(matchedGames, snapshotDate);
     } catch (error) {
@@ -2922,7 +2942,7 @@ app.get("/api/odds", async (_req, res) => {
 app.get("/api/lineups", async (_req, res) => {
   try {
     const payload = await loadDailyLineups();
-    const snapshotDate = new Date().toISOString().slice(0, 10);
+    const snapshotDate = mlbCalendarDate();
     const matchedGames = payload.games.map((game) => matchGameCard(game));
     try {
       await snapshotWinnerFeaturesForGames(matchedGames, snapshotDate);
@@ -2990,18 +3010,36 @@ app.get("/api/regression/report", (_req, res) => {
 app.get("/api/recommendations/history", (req, res) => {
   const requestedDays = Number.parseInt(String(req.query.days || "14"), 10);
   const days = Number.isFinite(requestedDays) ? Math.max(1, Math.min(365, requestedDays)) : 14;
-  const cutoff = new Date();
-  cutoff.setUTCHours(0, 0, 0, 0);
+  const todayDate = mlbCalendarDate();
+  const todayTime = Date.parse(`${todayDate}T00:00:00Z`);
+  const cutoff = new Date(todayTime);
   cutoff.setUTCDate(cutoff.getUTCDate() - (days - 1));
 
-  const resultsByGameId = new Map(readWinnerResults().map((result) => [result.gameId, result]));
+  const results = readWinnerResults();
+  const resultsByGameId = new Map(results.map((result) => [result.gameId, result]));
+  const resultsByMatchup = new Map<string, typeof results>();
+  results.forEach((result) => {
+    const key = `${result.away}_${result.home}`;
+    const rows = resultsByMatchup.get(key) || [];
+    rows.push(result);
+    resultsByMatchup.set(key, rows);
+  });
+
   const games = readWinnerFeatureSnapshots()
     .filter((snapshot) => {
       const snapshotTime = Date.parse(`${snapshot.snapshotDate}T00:00:00Z`);
       return Number.isFinite(snapshotTime) && snapshotTime >= cutoff.getTime();
     })
     .map((snapshot) => {
-      const result = resultsByGameId.get(snapshot.gameId) || null;
+      const exactResult = resultsByGameId.get(snapshot.gameId) || null;
+      const snapshotTime = Date.parse(`${snapshot.snapshotDate}T00:00:00Z`);
+      const nearestPriorResult = (resultsByMatchup.get(`${snapshot.away}_${snapshot.home}`) || [])
+        .map((result) => ({ result, distance: (snapshotTime - Date.parse(`${result.date}T00:00:00Z`)) / 86_400_000 }))
+        .filter(({ distance }) => distance >= 0 && distance <= 4)
+        .sort((a, b) => a.distance - b.distance)[0]?.result || null;
+      const isPast = snapshotTime < todayTime;
+      const status = exactResult ? "graded" : isPast ? "stale" : "pending";
+      const result = exactResult || (status === "stale" ? nearestPriorResult : null);
       const actualWinner = result ? (result.homeWin ? result.home : result.away) : null;
       return {
         date: snapshot.snapshotDate,
@@ -3009,9 +3047,10 @@ app.get("/api/recommendations/history", (req, res) => {
         away: snapshot.away,
         home: snapshot.home,
         predictedWinner: snapshot.heuristicPick,
-        status: result ? "graded" : "pending",
-        correct: result ? snapshot.heuristicPick === actualWinner : null,
+        status,
+        correct: exactResult ? snapshot.heuristicPick === actualWinner : null,
         actualWinner,
+        resultDate: result?.date || null,
         finalScore: result ? `${result.awayScore}-${result.homeScore}` : null,
         edge: snapshot.heuristicEdge,
         confidence: snapshot.heuristicConfidence,
@@ -3021,6 +3060,7 @@ app.get("/api/recommendations/history", (req, res) => {
     .sort((a, b) => b.date.localeCompare(a.date) || a.gameId.localeCompare(b.gameId));
 
   const graded = games.filter((game) => game.status === "graded");
+  const stale = games.filter((game) => game.status === "stale");
   const correctCount = graded.filter((game) => game.correct).length;
   const marketGraded = graded.filter((game) => game.marketLean);
   const marketCorrectCount = marketGraded.filter((game) => game.marketLean === game.actualWinner).length;
@@ -3032,7 +3072,8 @@ app.get("/api/recommendations/history", (req, res) => {
       totalCount: games.length,
       gradedCount: graded.length,
       correctCount,
-      pendingCount: games.length - graded.length,
+      staleCount: stale.length,
+      pendingCount: games.filter((game) => game.status === "pending").length,
       accuracy: graded.length ? correctCount / graded.length : null,
       marketGradedCount: marketGraded.length,
       marketCorrectCount,
