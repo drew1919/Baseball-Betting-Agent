@@ -2987,6 +2987,61 @@ app.get("/api/regression/report", (_req, res) => {
   });
 });
 
+app.get("/api/recommendations/history", (req, res) => {
+  const requestedDays = Number.parseInt(String(req.query.days || "14"), 10);
+  const days = Number.isFinite(requestedDays) ? Math.max(1, Math.min(365, requestedDays)) : 14;
+  const cutoff = new Date();
+  cutoff.setUTCHours(0, 0, 0, 0);
+  cutoff.setUTCDate(cutoff.getUTCDate() - (days - 1));
+
+  const resultsByGameId = new Map(readWinnerResults().map((result) => [result.gameId, result]));
+  const games = readWinnerFeatureSnapshots()
+    .filter((snapshot) => {
+      const snapshotTime = Date.parse(`${snapshot.snapshotDate}T00:00:00Z`);
+      return Number.isFinite(snapshotTime) && snapshotTime >= cutoff.getTime();
+    })
+    .map((snapshot) => {
+      const result = resultsByGameId.get(snapshot.gameId) || null;
+      const actualWinner = result ? (result.homeWin ? result.home : result.away) : null;
+      return {
+        date: snapshot.snapshotDate,
+        gameId: snapshot.gameId,
+        away: snapshot.away,
+        home: snapshot.home,
+        predictedWinner: snapshot.heuristicPick,
+        status: result ? "graded" : "pending",
+        correct: result ? snapshot.heuristicPick === actualWinner : null,
+        actualWinner,
+        finalScore: result ? `${result.awayScore}-${result.homeScore}` : null,
+        edge: snapshot.heuristicEdge,
+        confidence: snapshot.heuristicConfidence,
+        marketLean: snapshot.marketLean
+      };
+    })
+    .sort((a, b) => b.date.localeCompare(a.date) || a.gameId.localeCompare(b.gameId));
+
+  const graded = games.filter((game) => game.status === "graded");
+  const correctCount = graded.filter((game) => game.correct).length;
+  const marketGraded = graded.filter((game) => game.marketLean);
+  const marketCorrectCount = marketGraded.filter((game) => game.marketLean === game.actualWinner).length;
+
+  res.json({
+    ok: true,
+    days,
+    summary: {
+      totalCount: games.length,
+      gradedCount: graded.length,
+      correctCount,
+      pendingCount: games.length - graded.length,
+      accuracy: graded.length ? correctCount / graded.length : null,
+      marketGradedCount: marketGraded.length,
+      marketCorrectCount,
+      marketAccuracy: marketGraded.length ? marketCorrectCount / marketGraded.length : null
+    },
+    games
+  });
+});
+
 app.post("/api/chat", async (req, res) => {
   try {
     await ensureFreshModelData();
