@@ -7,6 +7,8 @@ export type WinnerFeatureSnapshot = {
   homeOffense: number;
   awayPitching: number;
   homePitching: number;
+  awayBullpen: number;
+  homeBullpen: number;
   awayTrend: number;
   homeTrend: number;
   awayWinProb: number;
@@ -41,6 +43,7 @@ export type WinnerResultRow = {
 export type RegressionTrainingRow = WinnerFeatureSnapshot & WinnerResultRow & {
   offenseDiff: number;
   pitchingDiff: number;
+  bullpenDiff: number;
   trendDiff: number;
   winProbDiff: number;
   defenseDiff: number;
@@ -80,6 +83,12 @@ export type RegressionReport = {
     averageParkIndex: number | null;
     averageAwayParkRating: number | null;
     averageHomeParkRating: number | null;
+  };
+  bullpenCoverage: {
+    populatedRows: number;
+    coverageRate: number;
+    averageAwayBullpenRating: number | null;
+    averageHomeBullpenRating: number | null;
   };
   heuristicMetrics: ModelMetrics | null;
   productionMetrics: ModelMetrics | null;

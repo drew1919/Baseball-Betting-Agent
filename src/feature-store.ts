@@ -43,6 +43,8 @@ function initDatabase() {
       home_offense REAL NOT NULL,
       away_pitching REAL NOT NULL,
       home_pitching REAL NOT NULL,
+      away_bullpen REAL NOT NULL DEFAULT 50,
+      home_bullpen REAL NOT NULL DEFAULT 50,
       away_trend REAL NOT NULL,
       home_trend REAL NOT NULL,
       away_win_prob REAL NOT NULL,
@@ -102,6 +104,12 @@ function ensureWinnerFeatureSnapshotColumns(database: DatabaseSync) {
   if (!names.has("home_park")) {
     database.exec("ALTER TABLE winner_feature_snapshots ADD COLUMN home_park REAL NOT NULL DEFAULT 50");
   }
+  if (!names.has("away_bullpen")) {
+    database.exec("ALTER TABLE winner_feature_snapshots ADD COLUMN away_bullpen REAL NOT NULL DEFAULT 50");
+  }
+  if (!names.has("home_bullpen")) {
+    database.exec("ALTER TABLE winner_feature_snapshots ADD COLUMN home_bullpen REAL NOT NULL DEFAULT 50");
+  }
 }
 
 function countRows(database: DatabaseSync, tableName: string) {
@@ -129,15 +137,16 @@ function migrateLegacyFiles(database: DatabaseSync) {
     if (legacyFeatures.length) {
       const statement = database.prepare(`
         INSERT OR REPLACE INTO winner_feature_snapshots (
-          game_id, snapshot_date, away, home, away_offense, home_offense, away_pitching, home_pitching,
+          game_id, snapshot_date, away, home, away_offense, home_offense, away_pitching, home_pitching, away_bullpen, home_bullpen,
           away_trend, home_trend, away_win_prob, home_win_prob, away_defense, home_defense, park_index, venue_name, away_park, home_park,
           away_moneyline, home_moneyline, total, lineup_coverage_away, lineup_coverage_home,
           heuristic_pick, heuristic_edge, heuristic_confidence, market_lean
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const row of legacyFeatures) {
         statement.run(
           row.gameId, row.snapshotDate, row.away, row.home, row.awayOffense, row.homeOffense, row.awayPitching, row.homePitching,
+          row.awayBullpen ?? 50, row.homeBullpen ?? 50,
           row.awayTrend, row.homeTrend, row.awayWinProb, row.homeWinProb, row.awayDefense, row.homeDefense,
           row.parkIndex ?? null, row.venueName ?? null, row.awayPark ?? 50, row.homePark ?? 50,
           row.awayMoneyline, row.homeMoneyline, row.total, row.lineupCoverageAway, row.lineupCoverageHome,
@@ -190,6 +199,8 @@ function mapFeatureRow(row: Record<string, unknown>): WinnerFeatureSnapshot {
     homeOffense: Number(row.home_offense),
     awayPitching: Number(row.away_pitching),
     homePitching: Number(row.home_pitching),
+    awayBullpen: row.away_bullpen === null || row.away_bullpen === undefined ? 50 : Number(row.away_bullpen),
+    homeBullpen: row.home_bullpen === null || row.home_bullpen === undefined ? 50 : Number(row.home_bullpen),
     awayTrend: Number(row.away_trend),
     homeTrend: Number(row.home_trend),
     awayWinProb: Number(row.away_win_prob),
@@ -242,11 +253,11 @@ export function readWinnerResults() {
 export function upsertWinnerFeatureSnapshots(rows: WinnerFeatureSnapshot[]) {
   const statement = database.prepare(`
     INSERT INTO winner_feature_snapshots (
-      game_id, snapshot_date, away, home, away_offense, home_offense, away_pitching, home_pitching,
+      game_id, snapshot_date, away, home, away_offense, home_offense, away_pitching, home_pitching, away_bullpen, home_bullpen,
       away_trend, home_trend, away_win_prob, home_win_prob, away_defense, home_defense, park_index, venue_name, away_park, home_park,
       away_moneyline, home_moneyline, total, lineup_coverage_away, lineup_coverage_home,
       heuristic_pick, heuristic_edge, heuristic_confidence, market_lean
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(game_id) DO UPDATE SET
       snapshot_date = excluded.snapshot_date,
       away = excluded.away,
@@ -255,6 +266,8 @@ export function upsertWinnerFeatureSnapshots(rows: WinnerFeatureSnapshot[]) {
       home_offense = excluded.home_offense,
       away_pitching = excluded.away_pitching,
       home_pitching = excluded.home_pitching,
+      away_bullpen = excluded.away_bullpen,
+      home_bullpen = excluded.home_bullpen,
       away_trend = excluded.away_trend,
       home_trend = excluded.home_trend,
       away_win_prob = excluded.away_win_prob,
@@ -281,6 +294,7 @@ export function upsertWinnerFeatureSnapshots(rows: WinnerFeatureSnapshot[]) {
     for (const row of rows) {
       statement.run(
         row.gameId, row.snapshotDate, row.away, row.home, row.awayOffense, row.homeOffense, row.awayPitching, row.homePitching,
+        row.awayBullpen, row.homeBullpen,
         row.awayTrend, row.homeTrend, row.awayWinProb, row.homeWinProb, row.awayDefense, row.homeDefense,
         row.parkIndex, row.venueName, row.awayPark, row.homePark,
         row.awayMoneyline, row.homeMoneyline, row.total, row.lineupCoverageAway, row.lineupCoverageHome,
