@@ -85,7 +85,8 @@ export function evaluateHeuristicBaseline(rows: RegressionTrainingRow[]): ModelM
 export function evaluateWalkForwardRegression(
   rows: RegressionTrainingRow[],
   minimumTrainingRows = 60,
-  featureNames?: readonly RegressionFeatureName[]
+  featureNames?: readonly RegressionFeatureName[],
+  incompleteRecentDate?: string
 ): {
   metrics: ModelMetrics | null;
   qualifiedMetrics: ModelMetrics | null;
@@ -127,11 +128,15 @@ export function evaluateWalkForwardRegression(
   const forcedPredictions = predictions.filter(({ probability }) =>
     Math.max(probability, 1 - probability) < QUALIFIED_CONFIDENCE_THRESHOLD
   );
-  const predictionDates = [...new Set(predictions.map((prediction) => prediction.date))].sort();
+  const predictionDates = [...new Set(predictions.map((prediction) => prediction.date))]
+    .filter((date) => date !== incompleteRecentDate)
+    .sort();
   const recentDates = predictionDates.slice(-RECENT_VALIDATION_DATES);
   const recentStartDate = recentDates[0] || null;
   const recentPredictions = recentStartDate
-    ? predictions.filter((prediction) => prediction.date >= recentStartDate)
+    ? predictions.filter((prediction) =>
+        prediction.date >= recentStartDate && prediction.date !== incompleteRecentDate
+      )
     : [];
   const recentQualified = recentPredictions.filter(({ probability }) =>
     Math.max(probability, 1 - probability) >= QUALIFIED_CONFIDENCE_THRESHOLD

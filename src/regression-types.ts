@@ -102,6 +102,7 @@ export type RegressionReport = {
   recentForcedMetrics?: ModelMetrics | null;
   recentHeuristicMetrics?: ModelMetrics | null;
   recentValidationStartDate?: string | null;
+  recentValidationExcludedDate?: string | null;
   productionApproved?: boolean;
   selectiveProductionApproved?: boolean;
   selectiveWalkForwardMetrics?: ModelMetrics | null;
