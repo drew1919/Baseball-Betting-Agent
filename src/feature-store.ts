@@ -63,7 +63,8 @@ function initDatabase() {
       heuristic_pick TEXT NOT NULL,
       heuristic_edge REAL NOT NULL,
       heuristic_confidence REAL NOT NULL,
-      market_lean TEXT
+      market_lean TEXT,
+      analysis_version TEXT NOT NULL DEFAULT 'legacy'
     );
 
     CREATE TABLE IF NOT EXISTS winner_results (
@@ -109,6 +110,9 @@ function ensureWinnerFeatureSnapshotColumns(database: DatabaseSync) {
   }
   if (!names.has("home_bullpen")) {
     database.exec("ALTER TABLE winner_feature_snapshots ADD COLUMN home_bullpen REAL NOT NULL DEFAULT 50");
+  }
+  if (!names.has("analysis_version")) {
+    database.exec("ALTER TABLE winner_feature_snapshots ADD COLUMN analysis_version TEXT NOT NULL DEFAULT 'legacy'");
   }
 }
 
@@ -219,7 +223,8 @@ function mapFeatureRow(row: Record<string, unknown>): WinnerFeatureSnapshot {
     heuristicPick: String(row.heuristic_pick),
     heuristicEdge: Number(row.heuristic_edge),
     heuristicConfidence: Number(row.heuristic_confidence),
-    marketLean: row.market_lean === null ? null : String(row.market_lean)
+    marketLean: row.market_lean === null ? null : String(row.market_lean),
+    analysisVersion: row.analysis_version === null || row.analysis_version === undefined ? "legacy" : String(row.analysis_version)
   };
 }
 
@@ -256,37 +261,9 @@ export function upsertWinnerFeatureSnapshots(rows: WinnerFeatureSnapshot[]) {
       game_id, snapshot_date, away, home, away_offense, home_offense, away_pitching, home_pitching, away_bullpen, home_bullpen,
       away_trend, home_trend, away_win_prob, home_win_prob, away_defense, home_defense, park_index, venue_name, away_park, home_park,
       away_moneyline, home_moneyline, total, lineup_coverage_away, lineup_coverage_home,
-      heuristic_pick, heuristic_edge, heuristic_confidence, market_lean
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(game_id) DO UPDATE SET
-      snapshot_date = excluded.snapshot_date,
-      away = excluded.away,
-      home = excluded.home,
-      away_offense = excluded.away_offense,
-      home_offense = excluded.home_offense,
-      away_pitching = excluded.away_pitching,
-      home_pitching = excluded.home_pitching,
-      away_bullpen = excluded.away_bullpen,
-      home_bullpen = excluded.home_bullpen,
-      away_trend = excluded.away_trend,
-      home_trend = excluded.home_trend,
-      away_win_prob = excluded.away_win_prob,
-      home_win_prob = excluded.home_win_prob,
-      away_defense = excluded.away_defense,
-      home_defense = excluded.home_defense,
-      park_index = excluded.park_index,
-      venue_name = excluded.venue_name,
-      away_park = excluded.away_park,
-      home_park = excluded.home_park,
-      away_moneyline = excluded.away_moneyline,
-      home_moneyline = excluded.home_moneyline,
-      total = excluded.total,
-      lineup_coverage_away = excluded.lineup_coverage_away,
-      lineup_coverage_home = excluded.lineup_coverage_home,
-      heuristic_pick = excluded.heuristic_pick,
-      heuristic_edge = excluded.heuristic_edge,
-      heuristic_confidence = excluded.heuristic_confidence,
-      market_lean = excluded.market_lean
+      heuristic_pick, heuristic_edge, heuristic_confidence, market_lean, analysis_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(game_id) DO NOTHING
   `);
 
   database.exec("BEGIN");
@@ -298,7 +275,7 @@ export function upsertWinnerFeatureSnapshots(rows: WinnerFeatureSnapshot[]) {
         row.awayTrend, row.homeTrend, row.awayWinProb, row.homeWinProb, row.awayDefense, row.homeDefense,
         row.parkIndex, row.venueName, row.awayPark, row.homePark,
         row.awayMoneyline, row.homeMoneyline, row.total, row.lineupCoverageAway, row.lineupCoverageHome,
-        row.heuristicPick, row.heuristicEdge, row.heuristicConfidence, row.marketLean
+        row.heuristicPick, row.heuristicEdge, row.heuristicConfidence, row.marketLean, row.analysisVersion || "legacy"
       );
     }
     database.exec("COMMIT");

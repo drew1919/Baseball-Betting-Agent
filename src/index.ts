@@ -8,8 +8,8 @@ import { STATS, type BatterStat, type PitcherStat } from "./stats.js";
 import { getAugmentedStats, getExpectedStatsCsvPaths, getExpectedStatsCsvWritePaths } from "./augmented-stats.js";
 import { upsertWinnerFeatureSnapshots, upsertWinnerResults, readWinnerFeatureSnapshots, readWinnerResults, readProductionRegressionModel, readCandidateRegressionModel, writeCandidateRegressionModel, writeProductionRegressionModel, readRegressionReport, writeRegressionReport, getStorageStatus } from "./feature-store.js";
 import { buildWinnerGameId, fetchWinnerResults } from "./results-fetcher.js";
-import { buildRegressionTrainingRows, MIN_REGRESSION_SAMPLE, trainLogisticRegression } from "./regression-trainer.js";
-import { evaluateHeuristicBaseline, evaluateRegressionModel } from "./model-evaluator.js";
+import { buildRegressionTrainingRows, MIN_REGRESSION_SAMPLE, predictHomeWinProbability, REGRESSION_FEATURE_VERSION, trainLogisticRegression } from "./regression-trainer.js";
+import { evaluateHeuristicBaseline, evaluateRegressionModel, evaluateWalkForwardRegression } from "./model-evaluator.js";
 import type { RegressionReport, WinnerFeatureSnapshot } from "./regression-types.js";
 
 dotenv.config();
@@ -19,7 +19,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(process.cwd(), "public")));
 
 const PORT = process.env.PORT || 3000;
-const ANALYSIS_VERSION = "models-v7-bullpen-recency";
+const ANALYSIS_VERSION = "models-v8-forward-tested";
 const CURRENT_SEASON = new Date().getFullYear();
 const PREVIOUS_SEASON = CURRENT_SEASON - 1;
 
@@ -41,7 +41,8 @@ const MODEL_DATA_MAX_AGE_MS = 1000 * 60 * 60 * 8;
 const SOURCE_STALE_MS = 1000 * 60 * 60 * 26;
 const ODDS_API_BASE = "https://api.the-odds-api.com/v4/sports/baseball_mlb/odds";
 const ODDS_BOOKMAKER = process.env.ODDS_BOOKMAKER || "fanduel";
-const MORNING_REFRESH_HOUR = 6;
+const MORNING_REFRESH_TIME_ZONE = process.env.MORNING_REFRESH_TIME_ZONE || "America/New_York";
+const MORNING_REFRESH_HOUR = Number.parseInt(process.env.MORNING_REFRESH_HOUR || "9", 10);
 const MORNING_REFRESH_MINUTE = 5;
 const TEAM_ALIASES: Record<string, string[]> = {
   ARI: ["ARI", "Arizona", "Arizona Diamondbacks", "Diamondbacks", "D-backs"],
@@ -160,6 +161,8 @@ type MatchedGameContext = {
   home: string;
   awayPitcher: PitcherStat | null;
   homePitcher: PitcherStat | null;
+  awayStarter: GamePitcher | null;
+  homeStarter: GamePitcher | null;
   awayBatters: BatterStat[];
   homeBatters: BatterStat[];
 };
@@ -213,6 +216,7 @@ type TeamRunDifferential = {
 type TeamRecentForm = {
   teamKey: string;
   games: number;
+  seasonGames: number;
   last5RunDiff: number;
   last10RunDiff: number;
   weightedRunDiff: number;
@@ -371,6 +375,63 @@ function mlbCalendarDate(date = new Date()) {
   }).formatToParts(date);
   const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return `${value.year}-${value.month}-${value.day}`;
+}
+
+function zonedParts(date: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return {
+    year: Number(values.year),
+    month: Number(values.month),
+    day: Number(values.day),
+    hour: Number(values.hour),
+    minute: Number(values.minute),
+    second: Number(values.second)
+  };
+}
+
+function zonedTimeToUtc(year: number, month: number, day: number, hour: number, minute: number, timeZone: string) {
+  const desiredAsUtc = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
+  let estimate = new Date(desiredAsUtc);
+  for (let pass = 0; pass < 2; pass += 1) {
+    const shown = zonedParts(estimate, timeZone);
+    const shownAsUtc = Date.UTC(shown.year, shown.month - 1, shown.day, shown.hour, shown.minute, shown.second);
+    estimate = new Date(estimate.getTime() + desiredAsUtc - shownAsUtc);
+  }
+  return estimate;
+}
+
+function nextMorningRefresh(now = new Date()) {
+  const current = zonedParts(now, MORNING_REFRESH_TIME_ZONE);
+  let next = zonedTimeToUtc(
+    current.year,
+    current.month,
+    current.day,
+    MORNING_REFRESH_HOUR,
+    MORNING_REFRESH_MINUTE,
+    MORNING_REFRESH_TIME_ZONE
+  );
+  if (next.getTime() <= now.getTime()) {
+    const tomorrow = new Date(Date.UTC(current.year, current.month - 1, current.day + 1));
+    next = zonedTimeToUtc(
+      tomorrow.getUTCFullYear(),
+      tomorrow.getUTCMonth() + 1,
+      tomorrow.getUTCDate(),
+      MORNING_REFRESH_HOUR,
+      MORNING_REFRESH_MINUTE,
+      MORNING_REFRESH_TIME_ZONE
+    );
+  }
+  return next;
 }
 
 function getErrorMessage(error: unknown) {
@@ -842,11 +903,13 @@ async function loadLastFiveRunDifferentials() {
   startDate.setDate(startDate.getDate() - 30);
   const start = startDate.toISOString().slice(0, 10);
 
-  const res = await fetch(`https://statsapi.mlb.com/api/v1/schedule?sportId=1&gameType=R&startDate=${start}&endDate=${today}`, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
-    }
-  });
+  const headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
+  };
+  const [res, standingsRes] = await Promise.all([
+    fetch(`https://statsapi.mlb.com/api/v1/schedule?sportId=1&gameType=R&startDate=${start}&endDate=${today}`, { headers }),
+    fetch(`https://statsapi.mlb.com/api/v1/standings?leagueId=103,104&season=${CURRENT_SEASON}&standingsTypes=regularSeason`, { headers })
+  ]);
 
   if (!res.ok) {
     throw new Error(`Fetch failed ${res.status} for recent MLB schedule`);
@@ -864,6 +927,16 @@ async function loadLastFiveRunDifferentials() {
       }>;
     }>;
   };
+  const seasonGames = new Map<string, number>();
+  if (standingsRes.ok) {
+    const standings = (await standingsRes.json()) as {
+      records?: Array<{ teamRecords?: Array<{ team?: { id?: number }; gamesPlayed?: number }> }>;
+    };
+    (standings.records || []).flatMap((record) => record.teamRecords || []).forEach((record) => {
+      const teamKey = MLB_TEAM_ID_TO_KEY.get(String(record.team?.id || ""));
+      if (teamKey) seasonGames.set(teamKey, Number(record.gamesPlayed || 0));
+    });
+  }
 
   const perTeam = new Map<string, Array<{ date: string; diff: number; win: boolean }>>();
 
@@ -900,6 +973,7 @@ async function loadLastFiveRunDifferentials() {
     map.set(teamKey, {
       teamKey,
       games: recent.length,
+      seasonGames: seasonGames.get(teamKey) || 0,
       last5RunDiff: last5.reduce((sum, game) => sum + game.diff, 0),
       last10RunDiff: recent.reduce((sum, game) => sum + game.diff, 0),
       weightedRunDiff: weightTotal ? weightedTotal / weightTotal : 0,
@@ -1235,17 +1309,19 @@ async function loadTeamDefenseStats() {
           const putOuts = parseNumber(String(stat.putOuts || 0));
           const doublePlays = parseNumber(String(stat.doublePlays || 0));
           const throwingErrors = parseNumber(String(stat.throwingErrors || 0));
-          const passedBalls = parseNumber(String(stat.passedBalls || 0));
+          const passedBalls = parseNumber(String(stat.passedBall || stat.passedBalls || 0));
+          const gamesPlayed = Math.max(1, parseNumber(String(stat.gamesPlayed || stat.games || 0)));
           const rangeFactorPerGame = parseDecimal(String(stat.rangeFactorPerGame || 0));
           const rangeFactorPer9 = parseDecimal(String(stat.rangeFactorPer9Inn || 0));
           const errorRate = chances ? errors / chances : 0;
-          const rawScore = (fieldingPct - 0.985) * 650
-            + rangeFactorPerGame * 1.35
-            + doublePlays * 0.05
-            + assists * 0.003
-            - errorRate * 900
-            - throwingErrors * 0.35
-            - passedBalls * 0.4;
+          // Team totals must be normalized; raw season counts previously pushed every club into the same clamp.
+          const rawScore = (fieldingPct - 0.985) * 500
+            + (rangeFactorPerGame - 35.5) * 0.15
+            + ((doublePlays / gamesPlayed) - 0.75) * 1.5
+            + (0.55 - (errors / gamesPlayed)) * 3
+            + (0.26 - (throwingErrors / gamesPlayed)) * 2
+            + (0.04 - (passedBalls / gamesPlayed)) * 1.5
+            + (0.015 - errorRate) * 100;
           const score = Math.max(-4, Math.min(4, rawScore));
 
           return [
@@ -1828,6 +1904,8 @@ function matchGameContext(gameContext: string): MatchedGameContext | null {
     home: teams.home,
     awayPitcher: awayPitcherName ? findPitcherStat(awayPitcherName) : null,
     homePitcher: homePitcherName ? findPitcherStat(homePitcherName) : null,
+    awayStarter: awayPitcherName ? { name: awayPitcherName, era: gameContext.match(/Away starter:[^\n]*?([\d.]+)\s*ERA/i)?.[1] || "", hand: "", record: "" } : null,
+    homeStarter: homePitcherName ? { name: homePitcherName, era: gameContext.match(/Home starter:[^\n]*?([\d.]+)\s*ERA/i)?.[1] || "", hand: "", record: "" } : null,
     awayBatters: compactBatters(collectNamedPlayersFromContext(gameContext, teams.away)
       .map((name) => findBatterStat(name))),
     homeBatters: compactBatters(collectNamedPlayersFromContext(gameContext, teams.home)
@@ -1841,6 +1919,8 @@ function matchGameCard(card: GameCard): MatchedGameContext {
     home: card.home,
     awayPitcher: card.awayP?.name ? findPitcherStat(card.awayP.name) : null,
     homePitcher: card.homeP?.name ? findPitcherStat(card.homeP.name) : null,
+    awayStarter: card.awayP,
+    homeStarter: card.homeP,
     awayBatters: compactBatters((card.awayLineup || []).map((batter) => findBatterStat(batter.name))),
     homeBatters: compactBatters((card.homeLineup || []).map((batter) => findBatterStat(batter.name)))
   };
@@ -1999,13 +2079,21 @@ function rankOffense(lineup: BatterStat[], recentStats = new Map<string, RecentB
   );
 }
 
-function rankPitchingForWin(pitcher: PitcherStat | null, recentStats = new Map<string, RecentPitcherStat>()) {
-  if (!pitcher) return 50;
-  const seasonRating = 50
-    + (0.320 - pitcher.xwoba) * 90
-    + (0.420 - pitcher.xslg) * 25
-    + (0.250 - pitcher.xba) * 20;
-  const recent = recentStats.get(normalizeName(statDisplayName(pitcher["last_name, first_name"]))) || null;
+function rankPitchingForWin(
+  pitcher: PitcherStat | null,
+  recentStats = new Map<string, RecentPitcherStat>(),
+  starter: GamePitcher | null = null
+) {
+  const starterName = pitcher ? statDisplayName(pitcher["last_name, first_name"]) : starter?.name || "";
+  const recent = recentStats.get(normalizeName(starterName)) || null;
+  const fallbackEra = Number.parseFloat(starter?.era || "");
+  if (!pitcher && !recent && !Number.isFinite(fallbackEra)) return 50;
+  const seasonRating = pitcher
+    ? 50
+      + (0.320 - pitcher.xwoba) * 90
+      + (0.420 - pitcher.xslg) * 25
+      + (0.250 - pitcher.xba) * 20
+    : 50 + (4.20 - (Number.isFinite(fallbackEra) ? fallbackEra : 4.20)) * 3;
   if (!recent) return Math.max(35, Math.min(80, seasonRating));
   const recentRating = 50
     + (4.00 - recent.era) * 3
@@ -2088,11 +2176,16 @@ async function winnerTrendScore(team: string, isHome: boolean) {
   const games = recent?.games || 0;
   const winRateAdjustment = games ? ((recent?.winsLast10 || 0) / games - 0.5) * 6 : 0;
   const priorSeasonWeight = new Date().getMonth() <= 4 ? 0.08 : 0;
-  const rawScore = (recent?.weightedRunDiff || 0) * 1.55
+  const seasonGames = Math.max(recent?.seasonGames || 0, 1);
+  const estimatedSplitGames = Math.max(seasonGames / 2, 1);
+  const seasonPerGame = row.season / seasonGames;
+  const splitPerGame = split / estimatedSplitGames;
+  const previousSeasonPerGame = row.previousSeason / 162;
+  const rawScore = (recent?.weightedRunDiff || 0) * 1.40
     + winRateAdjustment
-    + row.season * 0.55
-    + split * 0.20
-    + row.previousSeason * priorSeasonWeight;
+    + seasonPerGame * 1.20
+    + splitPerGame * 0.35
+    + previousSeasonPerGame * priorSeasonWeight;
   const score = Math.max(-12, Math.min(12, rawScore));
 
   return {
@@ -2135,8 +2228,8 @@ async function buildWinnerBreakdown(game: MatchedGameContext) {
   const marketLean = awayImplied === null || homeImplied === null ? null : (homeImplied >= awayImplied ? game.home : game.away);
   const awayOffense = rankOffense(game.awayBatters, recentBatters);
   const homeOffense = rankOffense(game.homeBatters, recentBatters);
-  const awayPitching = rankPitchingForWin(game.awayPitcher, recentPitchers);
-  const homePitching = rankPitchingForWin(game.homePitcher, recentPitchers);
+  const awayPitching = rankPitchingForWin(game.awayPitcher, recentPitchers, game.awayStarter);
+  const homePitching = rankPitchingForWin(game.homePitcher, recentPitchers, game.homeStarter);
   const awayBullpen = bullpens.get(resolveTeamKey(game.away) || "") || null;
   const homeBullpen = bullpens.get(resolveTeamKey(game.home) || "") || null;
   const awayBullpenRating = awayBullpen?.rating || 50;
@@ -2205,6 +2298,78 @@ async function buildWinnerBreakdown(game: MatchedGameContext) {
   };
 }
 
+function winnerPrediction(game: MatchedGameContext, breakdown: Awaited<ReturnType<typeof buildWinnerBreakdown>>) {
+  const heuristicHomeProbability = 1 / (1 + Math.exp(-breakdown.edge * 0.14));
+  const impliedTotal = (breakdown.awayImplied || 0) + (breakdown.homeImplied || 0);
+  const marketHomeProbability = breakdown.awayImplied !== null && breakdown.homeImplied !== null && impliedTotal
+    ? breakdown.homeImplied / impliedTotal
+    : null;
+  const production = readProductionRegressionModel();
+  const usableModel = production?.featureVersion === REGRESSION_FEATURE_VERSION
+    && production.trainingSampleSize >= MIN_REGRESSION_SAMPLE
+    ? production
+    : null;
+  const snapshot: WinnerFeatureSnapshot = {
+    analysisVersion: ANALYSIS_VERSION,
+    snapshotDate: mlbCalendarDate(),
+    gameId: buildWinnerGameId(mlbCalendarDate(), game.away, game.home),
+    away: game.away,
+    home: game.home,
+    awayOffense: breakdown.awayOffense,
+    homeOffense: breakdown.homeOffense,
+    awayPitching: breakdown.awayPitching,
+    homePitching: breakdown.homePitching,
+    awayBullpen: breakdown.awayBullpenRating,
+    homeBullpen: breakdown.homeBullpenRating,
+    awayTrend: breakdown.awayTrendRating,
+    homeTrend: breakdown.homeTrendRating,
+    awayWinProb: breakdown.awayWinProbRating,
+    homeWinProb: breakdown.homeWinProbRating,
+    awayDefense: breakdown.awayDefenseRating,
+    homeDefense: breakdown.homeDefenseRating,
+    parkIndex: breakdown.parkFactor?.indexWoba ?? null,
+    venueName: breakdown.parkFactor?.venueName ?? null,
+    awayPark: breakdown.awayParkRating,
+    homePark: breakdown.homeParkRating,
+    awayMoneyline: breakdown.odds?.awayMoneyline ?? null,
+    homeMoneyline: breakdown.odds?.homeMoneyline ?? null,
+    total: breakdown.odds?.total ?? null,
+    lineupCoverageAway: lineupCoverageRatio(game.away, game.awayBatters),
+    lineupCoverageHome: lineupCoverageRatio(game.home, game.homeBatters),
+    heuristicPick: breakdown.lean,
+    heuristicEdge: Math.abs(breakdown.edge),
+    heuristicConfidence: Math.max(heuristicHomeProbability, 1 - heuristicHomeProbability) * 100,
+    marketLean: breakdown.marketLean
+  };
+
+  let homeProbability = 0.5 + (heuristicHomeProbability - 0.5) * 0.35;
+  let method = "conservative weighted-heuristic fallback";
+  if (usableModel) {
+    const regressionProbability = predictHomeWinProbability(usableModel, snapshot);
+    if (Number.isFinite(regressionProbability)) {
+      homeProbability = regressionProbability;
+      method = "rolling-validated regression";
+    }
+  } else if (marketHomeProbability !== null) {
+    homeProbability = marketHomeProbability;
+    method = "no-vig market baseline";
+  }
+
+  const pick = homeProbability >= 0.5 ? game.home : game.away;
+  const confidence = Math.max(homeProbability, 1 - homeProbability) * 100;
+  return {
+    pick,
+    homeProbability,
+    pickProbability: Math.max(homeProbability, 1 - homeProbability),
+    confidence,
+    probabilityEdge: Math.abs(homeProbability - 0.5) * 200,
+    method,
+    validatedStrong: method === "rolling-validated regression" && confidence >= 55,
+    heuristicPick: breakdown.lean,
+    marketHomeProbability
+  };
+}
+
 function lineupCoverageRatio(teamAbbreviation: string, matchedBatters: BatterStat[]) {
   const expectedCount = 9;
   if (!teamAbbreviation) return matchedBatters.length / expectedCount;
@@ -2213,12 +2378,14 @@ function lineupCoverageRatio(teamAbbreviation: string, matchedBatters: BatterSta
 
 async function buildWinnerFeatureSnapshot(game: MatchedGameContext, snapshotDate: string): Promise<WinnerFeatureSnapshot> {
   const breakdown = await buildWinnerBreakdown(game);
+  const prediction = winnerPrediction(game, breakdown);
   const awayCoverage = lineupCoverageRatio(game.away, game.awayBatters);
   const homeCoverage = lineupCoverageRatio(game.home, game.homeBatters);
   const heuristicEdge = Math.abs(breakdown.edge);
-  const heuristicConfidence = heuristicEdge * 8 + (breakdown.marketLean === breakdown.lean ? 4 : breakdown.marketLean ? -2 : 0);
+  const heuristicConfidence = prediction.confidence;
 
   return {
+    analysisVersion: ANALYSIS_VERSION,
     snapshotDate,
     gameId: buildWinnerGameId(snapshotDate, game.away, game.home),
     away: game.away,
@@ -2244,7 +2411,7 @@ async function buildWinnerFeatureSnapshot(game: MatchedGameContext, snapshotDate
     total: breakdown.odds?.total ?? null,
     lineupCoverageAway: awayCoverage,
     lineupCoverageHome: homeCoverage,
-    heuristicPick: breakdown.lean,
+    heuristicPick: prediction.pick,
     heuristicEdge,
     heuristicConfidence,
     marketLean: breakdown.marketLean
@@ -2280,10 +2447,17 @@ async function refreshRegressionArtifacts() {
 
   const trainingRows = buildRegressionTrainingRows(joined);
   const candidate = trainLogisticRegression(trainingRows);
-  const heuristicMetrics = evaluateHeuristicBaseline(trainingRows);
-  const production = readProductionRegressionModel();
-  const productionMetrics = production ? evaluateRegressionModel(production, trainingRows) : null;
-  const candidateMetrics = candidate ? evaluateRegressionModel(candidate, trainingRows) : null;
+  const storedProduction = readProductionRegressionModel();
+  const production = storedProduction?.featureVersion === REGRESSION_FEATURE_VERSION ? storedProduction : null;
+  const walkForward = evaluateWalkForwardRegression(trainingRows, MIN_REGRESSION_SAMPLE);
+  const walkForwardRows = walkForward.firstTestDate
+    ? trainingRows.filter((row) => row.snapshotDate >= walkForward.firstTestDate!)
+    : [];
+  const heuristicMetrics = evaluateHeuristicBaseline(walkForwardRows);
+  const productionMetrics = production && walkForwardRows.length
+    ? evaluateRegressionModel(production, walkForwardRows)
+    : null;
+  const candidateMetrics = walkForward.metrics;
   const parkRows = featureRows.filter((row) => row.parkIndex !== null);
   const parkCoverage = {
     populatedRows: parkRows.length,
@@ -2304,23 +2478,18 @@ async function refreshRegressionArtifacts() {
 
   if (candidate) {
     writeCandidateRegressionModel(candidate);
-    const beatsProduction = !productionMetrics || !candidateMetrics
-      ? false
-      : candidateMetrics.logLoss < productionMetrics.logLoss
-        && candidateMetrics.brierScore <= productionMetrics.brierScore
-        && candidateMetrics.accuracy >= productionMetrics.accuracy - 0.01;
-
     const beatsHeuristic = !heuristicMetrics || !candidateMetrics
       ? false
       : candidateMetrics.logLoss < heuristicMetrics.logLoss
-        && candidateMetrics.brierScore <= heuristicMetrics.brierScore;
+        && candidateMetrics.brierScore <= heuristicMetrics.brierScore
+        && candidateMetrics.accuracy >= heuristicMetrics.accuracy + 0.02;
 
-    if ((!production && candidateMetrics && candidateMetrics.sampleSize >= 30) || (beatsProduction && beatsHeuristic && candidateMetrics && candidateMetrics.sampleSize >= 30)) {
+    if (beatsHeuristic && candidateMetrics && candidateMetrics.sampleSize >= 45) {
       writeProductionRegressionModel(candidate);
       promotedCandidate = true;
-      notes.push("Candidate regression promoted to production.");
+      notes.push("Candidate regression promoted after passing rolling forward validation.");
     } else {
-      notes.push("Candidate regression stored but not promoted.");
+      notes.push("Candidate regression stored but not promoted by rolling forward validation.");
     }
     } else {
       notes.push(`Regression needs at least ${MIN_REGRESSION_SAMPLE} completed games with matching pregame feature snapshots before training can begin.`);
@@ -2340,6 +2509,8 @@ async function refreshRegressionArtifacts() {
     heuristicMetrics,
     productionMetrics,
     candidateMetrics,
+    walkForwardMetrics: walkForward.metrics,
+    walkForwardStartDate: walkForward.firstTestDate,
     promotedCandidate,
     notes
   };
@@ -2434,11 +2605,7 @@ async function ensureFreshModelData() {
 
 function scheduleMorningRefresh() {
   const now = new Date();
-  const next = new Date(now);
-  next.setHours(MORNING_REFRESH_HOUR, MORNING_REFRESH_MINUTE, 0, 0);
-  if (next.getTime() <= now.getTime()) {
-    next.setDate(next.getDate() + 1);
-  }
+  const next = nextMorningRefresh(now);
 
   nextMorningRefreshAt = next.toISOString();
   const delay = Math.max(1000, next.getTime() - now.getTime());
@@ -2451,11 +2618,12 @@ function scheduleMorningRefresh() {
 async function chooseBestGeneralBet(game: MatchedGameContext) {
   const nrfi = await combinedNrfiScore(game);
   const winnerBreakdown = await buildWinnerBreakdown(game);
-  const winnerEdge = Math.abs(winnerBreakdown.edge);
+  const winner = winnerPrediction(game, winnerBreakdown);
+  const winnerEdge = winner.probabilityEdge;
   const total = winnerBreakdown.odds?.total ?? null;
   const nrfiConfidence = nrfi.combined + (total !== null ? (total <= 7.5 ? 3 : total >= 9 ? -3 : 0) : 0);
   const yrfiConfidence = (70 - nrfi.combined) + (total !== null ? (total >= 9 ? 3 : total <= 7.5 ? -3 : 0) : 0);
-  const winnerConfidence = winnerEdge * 8 + (winnerBreakdown.marketLean === winnerBreakdown.lean ? 4 : winnerBreakdown.marketLean ? -2 : 0);
+  const winnerConfidence = winner.confidence;
 
   if (nrfiConfidence >= 58) {
     return {
@@ -2469,15 +2637,13 @@ async function chooseBestGeneralBet(game: MatchedGameContext) {
     };
   }
 
-  if (winnerEdge >= 2) {
+  if (winnerConfidence >= 55) {
     return {
       type: "Winner",
       tag: recommendation(winnerConfidence, 24, 12),
       score: winnerEdge,
       confidence: winnerConfidence,
-      reason: winnerBreakdown.marketLean
-        ? `The lineup-vs-starter gap is giving the strongest edge on the side, and the ${winnerBreakdown.odds?.bookmaker || "market"} ${winnerBreakdown.marketLean === winnerBreakdown.lean ? "largely agrees" : "is the main point of disagreement to beat"}.`
-        : "The lineup-vs-starter gap is giving the strongest edge on the side rather than the inning total."
+      reason: `The ${winner.method} gives **${winner.pick}** a calibrated ${formatNumber(winner.confidence)}% win probability, which clears the selective winner threshold.`
     };
   }
 
@@ -2547,9 +2713,10 @@ async function analyzeFullInningNrfi(game: MatchedGameContext) {
 
 async function analyzeWinner(game: MatchedGameContext) {
   const breakdown = await buildWinnerBreakdown(game);
-  const edge = breakdown.edge;
-  const lean = breakdown.lean;
-  const tag = recommendation(Math.abs(edge) * 6, 24, 12);
+  const prediction = winnerPrediction(game, breakdown);
+  const edge = prediction.probabilityEdge;
+  const lean = prediction.pick;
+  const tag = recommendation(prediction.confidence, 62, 56);
   const oddsLine = breakdown.odds
     ? `${breakdown.odds.bookmaker} odds: away **${breakdown.odds.awayMoneyline ?? "n/a"}**, home **${breakdown.odds.homeMoneyline ?? "n/a"}**${breakdown.odds.total !== null ? `, total **${formatNumber(breakdown.odds.total, 1)}**` : ""}.`
     : "No live odds snapshot was available, so this is purely model-driven.";
@@ -2563,9 +2730,10 @@ async function analyzeWinner(game: MatchedGameContext) {
       `${game.away} defense details: **${formatNumber(breakdown.awayDefense?.score || 0)}**${breakdown.awayDefense ? ` (Fld% **${formatNumber(breakdown.awayDefense.fieldingPct, 3)}**, errors **${formatNumber(breakdown.awayDefense.errors, 0)}**)` : ""}. ${game.home} defense details: **${formatNumber(breakdown.homeDefense?.score || 0)}**${breakdown.homeDefense ? ` (Fld% **${formatNumber(breakdown.homeDefense.fieldingPct, 3)}**, errors **${formatNumber(breakdown.homeDefense.errors, 0)}**)` : ""}.`,
       `${game.away} win-prob details: batting **${formatNumber(breakdown.awayBattingImpact?.score || 0)}** / pitching **${formatNumber(breakdown.awayPitchingImpact?.score || 0)}**. ${game.home} win-prob details: batting **${formatNumber(breakdown.homeBattingImpact?.score || 0)}** / pitching **${formatNumber(breakdown.homePitchingImpact?.score || 0)}**.`,
       oddsLine,
+      `Prediction engine: **${prediction.method}**. Conservative win-probability estimate: **${formatNumber(prediction.confidence)}%** for ${lean}. The raw weighted heuristic preferred **${prediction.heuristicPick}**${breakdown.marketLean ? ` and the no-vig market side is **${breakdown.marketLean}**` : ""}.`,
       `The core mix is offense ${formatNumber(breakdown.weights.offense * 100, 0)}%, total pitching 30% (starter ${formatNumber(breakdown.weights.starter * 100, 0)}% + bullpen ${formatNumber(breakdown.weights.bullpen * 100, 0)}%), recency/trend ${formatNumber(breakdown.weights.trend * 100, 0)}%, win-probability 10%, defense 5%, and park 2%. The bullpen share rises later in the season while total pitching remains fixed. Odds stay as context rather than part of the weighted core.`,
     `${game.awayBatters.length && game.homeBatters.length ? "This read is using matched lineup bats from the selected game context." : "Lineup coverage is partial, so treat this as a softer lean."}`,
-    `${tag} Recommendation: **${lean}** moneyline. It is the ${winnerVerb(edge)} side based on run-prevention and contact-quality setup${breakdown.marketLean ? `, while the market ${breakdown.marketLean === lean ? "is broadly aligned" : "leans the other way"}` : ""}.`
+    `${tag} Recommendation: **${lean}** moneyline at **${formatNumber(prediction.confidence)}%** model confidence. ${prediction.validatedStrong ? "This clears the rolling-forward strong tier." : "This is a full-slate projection, not a validated high-confidence best bet."}`
   ].join("\n\n");
 }
 
@@ -2657,11 +2825,13 @@ async function topWinnerGamesFromSlate() {
     const ranked = (await Promise.all(payload.games.map(async (game) => {
         const matched = matchGameCard(game);
         const breakdown = await buildWinnerBreakdown(matched);
+        const prediction = winnerPrediction(matched, breakdown);
 
         return {
           matched,
-          pick: breakdown.lean,
-          confidence: Math.abs(breakdown.edge)
+          pick: prediction.pick,
+          confidence: prediction.confidence,
+          method: prediction.method
         };
       })))
       .filter(({ matched }) => matched.awayPitcher || matched.homePitcher || matched.awayBatters.length || matched.homeBatters.length)
@@ -2677,10 +2847,10 @@ async function topWinnerGamesFromSlate() {
 
     return [
       "**Projected winners today**",
-      ...ranked.map(({ matched, pick, confidence }, index) =>
-        `${index + 1}. **${matched.away} @ ${matched.home}** -> **${pick}** moneyline. Confidence score **${formatNumber(confidence)}**.`
+      ...ranked.map(({ matched, pick, confidence, method }, index) =>
+        `${index + 1}. **${matched.away} @ ${matched.home}** -> **${pick}** moneyline. Calibrated win probability **${formatNumber(confidence)}%** via ${method}.`
       ),
-      `${recommendation(ranked[0].confidence * 6, 24, 12)} Strongest winner lean on the current slate: **${ranked[0].pick}** in **${ranked[0].matched.away} @ ${ranked[0].matched.home}**.`
+      `${recommendation(ranked[0].confidence, 62, 56)} Strongest winner lean on the current slate: **${ranked[0].pick}** in **${ranked[0].matched.away} @ ${ranked[0].matched.home}** at **${formatNumber(ranked[0].confidence)}%**.`
     ].join("\n\n");
   } catch (error) {
     return [
@@ -2698,11 +2868,12 @@ async function topBestBetsFromSlate() {
         const matched = matchGameCard(game);
         const bestBet = await chooseBestGeneralBet(matched);
         const winnerBreakdown = await buildWinnerBreakdown(matched);
+        const winner = winnerPrediction(matched, winnerBreakdown);
 
         return {
           matched,
           bestBet,
-          winnerPick: winnerBreakdown.lean
+          winnerPick: winner.pick
         };
       })))
       .filter(({ matched }) => matched.awayPitcher || matched.homePitcher || matched.awayBatters.length || matched.homeBatters.length)
@@ -2716,9 +2887,13 @@ async function topBestBetsFromSlate() {
       ].join("\n\n");
     }
 
-    let selected = ranked.filter(({ bestBet }) => bestBet.confidence >= 66).slice(0, 8);
+    const qualifiesStrongly = ({ bestBet }: typeof ranked[number]) =>
+      bestBet.type === "Winner" ? bestBet.confidence >= 58 : bestBet.confidence >= 66;
+    const qualifies = ({ bestBet }: typeof ranked[number]) =>
+      bestBet.type === "Winner" ? bestBet.confidence >= 55 : bestBet.confidence >= 60;
+    let selected = ranked.filter(qualifiesStrongly).slice(0, 8);
     if (!selected.length) {
-      selected = ranked.filter(({ bestBet }) => bestBet.confidence >= 60).slice(0, 5);
+      selected = ranked.filter(qualifies).slice(0, 5);
     }
     if (!selected.length) {
       selected = ranked.slice(0, 1);
@@ -2907,6 +3082,7 @@ app.get("/api/health", (_req, res) => {
     storage,
     refresh: {
       morningRefreshHourLocal: `${String(MORNING_REFRESH_HOUR).padStart(2, "0")}:${String(MORNING_REFRESH_MINUTE).padStart(2, "0")}`,
+      morningRefreshTimeZone: MORNING_REFRESH_TIME_ZONE,
       nextMorningRefreshAt,
       lastMorningRefreshAt,
       lastMorningRefreshStatus,
@@ -2999,6 +3175,7 @@ app.get("/api/regression/report", (_req, res) => {
     storage,
     refresh: {
       morningRefreshHourLocal: `${String(MORNING_REFRESH_HOUR).padStart(2, "0")}:${String(MORNING_REFRESH_MINUTE).padStart(2, "0")}`,
+      morningRefreshTimeZone: MORNING_REFRESH_TIME_ZONE,
       nextMorningRefreshAt,
       lastMorningRefreshAt,
       lastMorningRefreshStatus,
@@ -3054,7 +3231,8 @@ app.get("/api/recommendations/history", (req, res) => {
         finalScore: result ? `${result.awayScore}-${result.homeScore}` : null,
         edge: snapshot.heuristicEdge,
         confidence: snapshot.heuristicConfidence,
-        marketLean: snapshot.marketLean
+        marketLean: snapshot.marketLean,
+        analysisVersion: snapshot.analysisVersion || "legacy"
       };
     })
     .sort((a, b) => b.date.localeCompare(a.date) || a.gameId.localeCompare(b.gameId));
@@ -3064,6 +3242,16 @@ app.get("/api/recommendations/history", (req, res) => {
   const correctCount = graded.filter((game) => game.correct).length;
   const marketGraded = graded.filter((game) => game.marketLean);
   const marketCorrectCount = marketGraded.filter((game) => game.marketLean === game.actualWinner).length;
+  const byAnalysisVersion = Object.values(graded.reduce<Record<string, { version: string; gradedCount: number; correctCount: number }>>((groups, game) => {
+    const version = game.analysisVersion || "legacy";
+    if (!groups[version]) groups[version] = { version, gradedCount: 0, correctCount: 0 };
+    groups[version].gradedCount += 1;
+    if (game.correct) groups[version].correctCount += 1;
+    return groups;
+  }, {})).map((group) => ({
+    ...group,
+    accuracy: group.gradedCount ? group.correctCount / group.gradedCount : null
+  }));
 
   res.json({
     ok: true,
@@ -3077,7 +3265,8 @@ app.get("/api/recommendations/history", (req, res) => {
       accuracy: graded.length ? correctCount / graded.length : null,
       marketGradedCount: marketGraded.length,
       marketCorrectCount,
-      marketAccuracy: marketGraded.length ? marketCorrectCount / marketGraded.length : null
+      marketAccuracy: marketGraded.length ? marketCorrectCount / marketGraded.length : null,
+      byAnalysisVersion
     },
     games
   });

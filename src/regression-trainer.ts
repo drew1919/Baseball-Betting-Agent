@@ -10,11 +10,39 @@ const FEATURE_NAMES = [
   "parkDiff",
   "impliedDiff",
   "totalValue",
-  "coverageDiff",
-  "homeField"
+  "coverageDiff"
 ] as const;
 
-export const MIN_REGRESSION_SAMPLE = 30;
+export const REGRESSION_FEATURE_VERSION = 2;
+export const MIN_REGRESSION_SAMPLE = 60;
+const PROBABILITY_CALIBRATION_FACTOR = 0.5;
+
+function impliedProbability(odds: number | null) {
+  if (odds === null || !Number.isFinite(odds) || odds === 0) return null;
+  return odds < 0 ? -odds / (-odds + 100) : 100 / (odds + 100);
+}
+
+function regressionFeatures(row: WinnerFeatureSnapshot) {
+  const awayImplied = impliedProbability(row.awayMoneyline);
+  const homeImplied = impliedProbability(row.homeMoneyline);
+  const impliedTotal = (awayImplied || 0) + (homeImplied || 0);
+  const noVigHome = awayImplied !== null && homeImplied !== null && impliedTotal
+    ? homeImplied / impliedTotal
+    : 0.5;
+  return {
+    offenseDiff: row.homeOffense - row.awayOffense,
+    pitchingDiff: row.homePitching - row.awayPitching,
+    bullpenDiff: row.homeBullpen - row.awayBullpen,
+    trendDiff: row.homeTrend - row.awayTrend,
+    winProbDiff: row.homeWinProb - row.awayWinProb,
+    defenseDiff: row.homeDefense - row.awayDefense,
+    parkDiff: row.homePark - row.awayPark,
+    impliedDiff: noVigHome - 0.5,
+    totalValue: (row.total ?? 8.5) - 8.5,
+    coverageDiff: row.lineupCoverageHome - row.lineupCoverageAway,
+    homeField: 1
+  };
+}
 
 function sigmoid(value: number) {
   if (value >= 0) {
@@ -26,20 +54,7 @@ function sigmoid(value: number) {
 }
 
 export function buildRegressionTrainingRows(rows: Array<WinnerFeatureSnapshot & WinnerResultRow>): RegressionTrainingRow[] {
-  return rows.map((row) => ({
-    ...row,
-    offenseDiff: row.homeOffense - row.awayOffense,
-    pitchingDiff: row.homePitching - row.awayPitching,
-    bullpenDiff: row.homeBullpen - row.awayBullpen,
-    trendDiff: row.homeTrend - row.awayTrend,
-    winProbDiff: row.homeWinProb - row.awayWinProb,
-    defenseDiff: row.homeDefense - row.awayDefense,
-    parkDiff: row.homePark - row.awayPark,
-    impliedDiff: ((row.homeMoneyline ?? 0) - (row.awayMoneyline ?? 0)) * -1,
-    totalValue: row.total ?? 8.5,
-    coverageDiff: row.lineupCoverageHome - row.lineupCoverageAway,
-    homeField: 1
-  }));
+  return rows.map((row) => ({ ...row, ...regressionFeatures(row) }));
 }
 
 export function trainLogisticRegression(rows: RegressionTrainingRow[]): LogisticRegressionModel | null {
@@ -66,7 +81,7 @@ export function trainLogisticRegression(rows: RegressionTrainingRow[]): Logistic
   const weights = new Array(FEATURE_NAMES.length).fill(0);
   let intercept = 0;
   const learningRate = 0.045;
-  const regularization = 0.001;
+  const regularization = 0.02;
   const iterations = 1800;
 
   for (let iteration = 0; iteration < iterations; iteration += 1) {
@@ -96,6 +111,7 @@ export function trainLogisticRegression(rows: RegressionTrainingRow[]): Logistic
   }
 
   return {
+    featureVersion: REGRESSION_FEATURE_VERSION,
     featureNames: [...FEATURE_NAMES],
     means,
     stds,
@@ -106,11 +122,13 @@ export function trainLogisticRegression(rows: RegressionTrainingRow[]): Logistic
   };
 }
 
-export function predictHomeWinProbability(model: LogisticRegressionModel, row: RegressionTrainingRow) {
-  const values = model.featureNames.map((name) => row[name as keyof RegressionTrainingRow] as number);
+export function predictHomeWinProbability(model: LogisticRegressionModel, row: WinnerFeatureSnapshot) {
+  const features = regressionFeatures(row);
+  const values = model.featureNames.map((name) => features[name as keyof typeof features] as number);
   let linear = model.intercept;
   for (let index = 0; index < values.length; index += 1) {
     linear += ((values[index] - model.means[index]) / (model.stds[index] || 1)) * model.weights[index];
   }
-  return sigmoid(linear);
+  const rawProbability = sigmoid(linear);
+  return 0.5 + (rawProbability - 0.5) * PROBABILITY_CALIBRATION_FACTOR;
 }

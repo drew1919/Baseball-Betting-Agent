@@ -1,6 +1,8 @@
 # Baseball Gambling Agent
 
-A baseball betting analysis app that combines current MLB data, Statcast expected statistics, recency-aware features, and a self-evaluating logistic regression layer. It produces game-winner, NRFI/YRFI, and pitcher strikeout recommendations without a paid language-model API.
+A baseball betting analysis app that combines current MLB data, Statcast expected statistics, recency-aware features, and a rolling-forward-evaluated logistic regression layer. It produces game-winner, NRFI/YRFI, and pitcher strikeout recommendations without a paid language-model API.
+
+Winner projections use the regression only after its training procedure beats the stored-pick baseline on chronologically later games. Probabilities are shrunk toward 50% to reduce overconfidence. If no validated model is available, the app falls back to the no-vig market probability and then the weighted heuristic.
 
 ## Model Inputs
 
@@ -60,13 +62,18 @@ The analysis engine runs without API keys. Live odds are omitted when `ODDS_API_
 
 ## Refresh Behavior
 
-- A full refresh runs at startup and daily at 06:05 in the server's local timezone.
+- A full refresh runs at startup and daily at 09:05 America/New_York by default. Set `MORNING_REFRESH_TIME_ZONE` and `MORNING_REFRESH_HOUR` to override it.
 - `/api/chat` triggers a guarded refresh when model data is older than eight hours or expected-stat CSVs are stale.
 - Failed refreshes are throttled and retain the last known-good files.
 - Expected-stat files are validated for minimum coverage and replaced atomically; empty scraper output cannot overwrite good data.
 - Source attempts, successes, row counts, errors, ages, and stale flags are exposed through `/api/health`.
+- The first pregame feature snapshot for a matchup/date is immutable. Page loads and later refreshes cannot rewrite history with in-game or postgame data.
 
-On Oracle, confirm the VM timezone if 06:05 must correspond to a specific local time.
+The scheduler is timezone-explicit, so the Oracle VM's operating-system timezone no longer changes the capture time.
+
+## Model Diagnostics
+
+Run `npm run validate:model -- data/app.db` to evaluate the exact regression implementation with rolling daily holdouts. Run `npm run analyze:history -- data/app.db` for recent performance, market agreement, side bias, and feature-variance diagnostics. These are forward-looking checks; in-sample accuracy is not used as evidence for promotion.
 
 ## Persistent Data
 
