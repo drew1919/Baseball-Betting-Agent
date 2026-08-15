@@ -49,12 +49,21 @@ const joined = rawRows.map((row) => ({
 
 const trainingRows = buildRegressionTrainingRows(joined);
 const forward = evaluateWalkForwardRegression(trainingRows);
+const noOddsRows = buildRegressionTrainingRows(joined.map((row) => ({
+  ...row,
+  awayMoneyline: null,
+  homeMoneyline: null,
+  total: null,
+  marketLean: null
+})));
+const noOddsForward = evaluateWalkForwardRegression(noOddsRows);
 const testRows = forward.firstTestDate
   ? trainingRows.filter((row) => row.snapshotDate >= forward.firstTestDate)
   : [];
 const candidate = trainLogisticRegression(trainingRows);
 const dates = [...new Set(trainingRows.map((row) => row.snapshotDate))].sort();
 const predictions = [];
+const noOddsDeploymentPredictions = [];
 dates.forEach((date) => {
   const earlier = trainingRows.filter((row) => row.snapshotDate < date);
   if (earlier.length < 60) return;
@@ -63,6 +72,13 @@ dates.forEach((date) => {
     const probability = predictHomeWinProbability(model, row);
     const regressionPick = probability >= 0.5 ? row.home : row.away;
     predictions.push({ row, probability, regressionPick });
+    const noOddsRow = { ...row, awayMoneyline: null, homeMoneyline: null, total: null, marketLean: null };
+    const noOddsProbability = predictHomeWinProbability(model, noOddsRow);
+    noOddsDeploymentPredictions.push({
+      row,
+      probability: noOddsProbability,
+      regressionPick: noOddsProbability >= 0.5 ? row.home : row.away
+    });
   });
 });
 
@@ -102,6 +118,11 @@ console.log(JSON.stringify({
   candidateVersion: candidate?.featureVersion || null,
   firstForwardTestDate: forward.firstTestDate,
   forwardMetrics: forward.metrics,
+  noOddsForwardMetrics: noOddsForward.metrics,
+  oddsCoverage: {
+    gamesWithMoneylines: joined.filter((row) => row.awayMoneyline !== null && row.homeMoneyline !== null).length,
+    totalGames: joined.length
+  },
   heuristicOnForwardWindow: evaluateHeuristicBaseline(testRows),
   strategyChecks: {
     regressionHighConfidence: segmentMetrics(highConfidence, (entry) => entry.regressionPick),
@@ -110,6 +131,11 @@ console.log(JSON.stringify({
     market: segmentMetrics(marketAvailable, (entry) => entry.row.marketLean),
     regressionMarketAgree: segmentMetrics(regressionMarketAgree, (entry) => entry.regressionPick),
     regressionMarketDisagree: segmentMetrics(regressionMarketDisagree, (entry) => entry.regressionPick),
+    trainedWithOddsDeployedWithoutOdds: segmentMetrics(noOddsDeploymentPredictions, (entry) => entry.regressionPick),
+    noOddsCalibrated55Plus: segmentMetrics(
+      noOddsDeploymentPredictions.filter(({ probability }) => Math.max(probability, 1 - probability) >= 0.55),
+      (entry) => entry.regressionPick
+    ),
     highRegressionOtherwiseMarket: segmentMetrics(predictions, hybridPicker)
   },
   calibrationChecks,
