@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { buildRegressionTrainingRows, predictHomeWinProbability, REGRESSION_FEATURE_VERSION, trainLogisticRegression } from "../dist/regression-trainer.js";
+import { buildRegressionTrainingRows, predictHomeWinProbability, REGRESSION_FEATURE_NAMES, REGRESSION_FEATURE_VERSION, trainLogisticRegression } from "../dist/regression-trainer.js";
 import { evaluateHeuristicBaseline, evaluateWalkForwardRegression } from "../dist/model-evaluator.js";
 
 const databasePath = process.argv[2] || "data/app.db";
@@ -66,15 +66,24 @@ const recentTestRows = forward.recentStartDate
 const candidate = trainLogisticRegression(trainingRows);
 const dates = [...new Set(trainingRows.map((row) => row.snapshotDate))].sort();
 const predictions = [];
+const selectivePredictions = [];
 const noOddsDeploymentPredictions = [];
+const selectiveFeatureNames = REGRESSION_FEATURE_NAMES.filter((name) => name !== "totalValue");
 dates.forEach((date) => {
   const earlier = trainingRows.filter((row) => row.snapshotDate < date);
   if (earlier.length < 60) return;
   const model = trainLogisticRegression(earlier);
+  const selectiveModel = trainLogisticRegression(earlier, selectiveFeatureNames);
   trainingRows.filter((row) => row.snapshotDate === date).forEach((row) => {
     const probability = predictHomeWinProbability(model, row);
     const regressionPick = probability >= 0.5 ? row.home : row.away;
     predictions.push({ row, probability, regressionPick });
+    const selectiveProbability = predictHomeWinProbability(selectiveModel, row);
+    selectivePredictions.push({
+      row,
+      probability: selectiveProbability,
+      regressionPick: selectiveProbability >= 0.5 ? row.home : row.away
+    });
     const noOddsRow = { ...row, awayMoneyline: null, homeMoneyline: null, total: null, marketLean: null };
     const noOddsProbability = predictHomeWinProbability(model, noOddsRow);
     noOddsDeploymentPredictions.push({
@@ -99,6 +108,26 @@ const recentPredictions = forward.recentStartDate
   : [];
 const recentHighConfidence = recentPredictions.filter(({ probability }) => Math.max(probability, 1 - probability) >= 0.55);
 const recentLowerConfidence = recentPredictions.filter(({ probability }) => Math.max(probability, 1 - probability) < 0.55);
+const selectiveQualified = selectivePredictions.filter(({ probability }) => Math.max(probability, 1 - probability) >= 0.55);
+const selectiveByGame = new Map(selectivePredictions.map((entry) => [entry.row.gameId, entry]));
+const primaryQualifiedWithSelective = highConfidence.map((primary) => ({
+  ...primary,
+  selective: selectiveByGame.get(primary.row.gameId)
+})).filter((entry) => entry.selective);
+const dualQualifiedAgree = primaryQualifiedWithSelective.filter((entry) =>
+  Math.max(entry.selective.probability, 1 - entry.selective.probability) >= 0.55
+  && entry.regressionPick === entry.selective.regressionPick
+);
+const dualQualifiedDisagree = primaryQualifiedWithSelective.filter((entry) =>
+  Math.max(entry.selective.probability, 1 - entry.selective.probability) >= 0.55
+  && entry.regressionPick !== entry.selective.regressionPick
+);
+const recentSelectiveQualified = forward.recentStartDate
+  ? selectiveQualified.filter(({ row }) => row.snapshotDate >= forward.recentStartDate)
+  : [];
+const recentDualQualifiedAgree = forward.recentStartDate
+  ? dualQualifiedAgree.filter(({ row }) => row.snapshotDate >= forward.recentStartDate)
+  : [];
 const marketAvailable = predictions.filter(({ row }) => row.marketLean);
 const regressionMarketAgree = marketAvailable.filter((entry) => entry.regressionPick === entry.row.marketLean);
 const regressionMarketDisagree = marketAvailable.filter((entry) => entry.regressionPick !== entry.row.marketLean);
@@ -143,6 +172,11 @@ console.log(JSON.stringify({
     regressionLowerConfidence: segmentMetrics(lowerConfidence, (entry) => entry.regressionPick),
     recentRegressionHighConfidence: segmentMetrics(recentHighConfidence, (entry) => entry.regressionPick),
     recentRegressionLowerConfidence: segmentMetrics(recentLowerConfidence, (entry) => entry.regressionPick),
+    selectiveNoTotalQualified: segmentMetrics(selectiveQualified, (entry) => entry.regressionPick),
+    dualQualifiedAgree: segmentMetrics(dualQualifiedAgree, (entry) => entry.regressionPick),
+    dualQualifiedDisagree: segmentMetrics(dualQualifiedDisagree, (entry) => entry.regressionPick),
+    recentSelectiveNoTotalQualified: segmentMetrics(recentSelectiveQualified, (entry) => entry.regressionPick),
+    recentDualQualifiedAgree: segmentMetrics(recentDualQualifiedAgree, (entry) => entry.regressionPick),
     market: segmentMetrics(marketAvailable, (entry) => entry.row.marketLean),
     regressionMarketAgree: segmentMetrics(regressionMarketAgree, (entry) => entry.regressionPick),
     regressionMarketDisagree: segmentMetrics(regressionMarketDisagree, (entry) => entry.regressionPick),

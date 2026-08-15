@@ -1,5 +1,5 @@
 import type { LogisticRegressionModel, ModelMetrics, RegressionTrainingRow } from "./regression-types.js";
-import { predictHomeWinProbability, trainLogisticRegression } from "./regression-trainer.js";
+import { predictHomeWinProbability, trainLogisticRegression, type RegressionFeatureName } from "./regression-trainer.js";
 
 export const RECENT_VALIDATION_DATES = 5;
 export const QUALIFIED_CONFIDENCE_THRESHOLD = 0.55;
@@ -84,9 +84,12 @@ export function evaluateHeuristicBaseline(rows: RegressionTrainingRow[]): ModelM
 
 export function evaluateWalkForwardRegression(
   rows: RegressionTrainingRow[],
-  minimumTrainingRows = 60
+  minimumTrainingRows = 60,
+  featureNames?: readonly RegressionFeatureName[]
 ): {
   metrics: ModelMetrics | null;
+  qualifiedMetrics: ModelMetrics | null;
+  forcedMetrics: ModelMetrics | null;
   firstTestDate: string | null;
   recentMetrics: ModelMetrics | null;
   recentQualifiedMetrics: ModelMetrics | null;
@@ -100,7 +103,7 @@ export function evaluateWalkForwardRegression(
   dates.forEach((date) => {
     const training = rows.filter((row) => row.snapshotDate < date);
     if (training.length < minimumTrainingRows) return;
-    const model = trainLogisticRegression(training);
+    const model = trainLogisticRegression(training, featureNames);
     if (!model) return;
     if (!firstTestDate) firstTestDate = date;
     rows.filter((row) => row.snapshotDate === date).forEach((row) => {
@@ -110,12 +113,20 @@ export function evaluateWalkForwardRegression(
 
   if (!predictions.length) return {
     metrics: null,
+    qualifiedMetrics: null,
+    forcedMetrics: null,
     firstTestDate,
     recentMetrics: null,
     recentQualifiedMetrics: null,
     recentForcedMetrics: null,
     recentStartDate: null
   };
+  const qualifiedPredictions = predictions.filter(({ probability }) =>
+    Math.max(probability, 1 - probability) >= QUALIFIED_CONFIDENCE_THRESHOLD
+  );
+  const forcedPredictions = predictions.filter(({ probability }) =>
+    Math.max(probability, 1 - probability) < QUALIFIED_CONFIDENCE_THRESHOLD
+  );
   const predictionDates = [...new Set(predictions.map((prediction) => prediction.date))].sort();
   const recentDates = predictionDates.slice(-RECENT_VALIDATION_DATES);
   const recentStartDate = recentDates[0] || null;
@@ -131,6 +142,8 @@ export function evaluateWalkForwardRegression(
   return {
     firstTestDate,
     metrics: predictionMetrics(predictions),
+    qualifiedMetrics: predictionMetrics(qualifiedPredictions),
+    forcedMetrics: predictionMetrics(forcedPredictions),
     recentMetrics: predictionMetrics(recentPredictions),
     recentQualifiedMetrics: predictionMetrics(recentQualified),
     recentForcedMetrics: predictionMetrics(recentForced),

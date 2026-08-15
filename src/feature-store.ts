@@ -331,6 +331,18 @@ export function writeCandidateRegressionModel(model: LogisticRegressionModel) {
   writeArtifactToDatabase(database, "regression-candidate", model);
 }
 
+export function readProductionSelectiveRegressionModel() {
+  return readArtifact<LogisticRegressionModel>("regression-selective-production");
+}
+
+export function writeProductionSelectiveRegressionModel(model: LogisticRegressionModel) {
+  writeArtifactToDatabase(database, "regression-selective-production", model);
+}
+
+export function writeCandidateSelectiveRegressionModel(model: LogisticRegressionModel) {
+  writeArtifactToDatabase(database, "regression-selective-candidate", model);
+}
+
 export function readRegressionReport() {
   return readArtifact<RegressionReport>("model-report");
 }

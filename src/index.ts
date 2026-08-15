@@ -6,9 +6,9 @@ import fs from "node:fs/promises";
 import { renderPage } from "./page.js";
 import { STATS, type BatterStat, type PitcherStat } from "./stats.js";
 import { getAugmentedStats, getExpectedStatsCsvPaths, getExpectedStatsCsvWritePaths } from "./augmented-stats.js";
-import { upsertWinnerFeatureSnapshots, upsertWinnerResults, readWinnerFeatureSnapshots, readWinnerResults, readProductionRegressionModel, readCandidateRegressionModel, writeCandidateRegressionModel, writeProductionRegressionModel, readRegressionReport, writeRegressionReport, getStorageStatus } from "./feature-store.js";
+import { upsertWinnerFeatureSnapshots, upsertWinnerResults, readWinnerFeatureSnapshots, readWinnerResults, readProductionRegressionModel, readCandidateRegressionModel, writeCandidateRegressionModel, writeProductionRegressionModel, readProductionSelectiveRegressionModel, writeCandidateSelectiveRegressionModel, writeProductionSelectiveRegressionModel, readRegressionReport, writeRegressionReport, getStorageStatus } from "./feature-store.js";
 import { buildWinnerGameId, fetchWinnerResults, fetchWinnerScoreboard, type WinnerScoreboard } from "./results-fetcher.js";
-import { buildRegressionTrainingRows, MIN_REGRESSION_SAMPLE, predictHomeWinProbability, REGRESSION_FEATURE_VERSION, trainLogisticRegression } from "./regression-trainer.js";
+import { buildRegressionTrainingRows, MIN_REGRESSION_SAMPLE, predictHomeWinProbability, REGRESSION_FEATURE_NAMES, REGRESSION_FEATURE_VERSION, trainLogisticRegression } from "./regression-trainer.js";
 import { evaluateHeuristicBaseline, evaluateRegressionModel, evaluateWalkForwardRegression, QUALIFIED_CONFIDENCE_THRESHOLD, RECENT_VALIDATION_DATES } from "./model-evaluator.js";
 import type { RegressionReport, WinnerFeatureSnapshot } from "./regression-types.js";
 
@@ -46,6 +46,7 @@ const RECENT_APPROVAL_MIN_GAMES = 30;
 const RECENT_APPROVAL_MIN_ACCURACY = 0.50;
 const QUALIFIED_APPROVAL_MIN_GAMES = 15;
 const QUALIFIED_APPROVAL_MIN_ACCURACY = 0.60;
+const SELECTIVE_FEATURE_NAMES = REGRESSION_FEATURE_NAMES.filter((name) => name !== "totalValue");
 const ODDS_API_BASE = "https://api.the-odds-api.com/v4/sports/baseball_mlb/odds";
 const ODDS_BOOKMAKER = process.env.ODDS_BOOKMAKER || "fanduel";
 const MORNING_REFRESH_TIME_ZONE = process.env.MORNING_REFRESH_TIME_ZONE || "America/New_York";
@@ -2454,19 +2455,25 @@ function winnerPrediction(game: MatchedGameContext, breakdown: Awaited<ReturnTyp
       confidence: snapshotConfidence,
       probabilityEdge: (snapshotConfidence - 50) * 2,
       method: "immutable pregame prediction",
-      validatedStrong: snapshot.awayMoneyline !== null
-        && snapshot.homeMoneyline !== null
-        && snapshotConfidence >= 55,
+      validatedStrong: false,
+      selectiveConfirmation: false,
+      selectiveConfidence: null,
       heuristicPick: snapshot.heuristicPick,
       marketHomeProbability
     };
   }
   const production = readProductionRegressionModel();
+  const selectiveProduction = readProductionSelectiveRegressionModel();
   const regressionReport = readRegressionReport();
   const usableModel = production?.featureVersion === REGRESSION_FEATURE_VERSION
     && production.trainingSampleSize >= MIN_REGRESSION_SAMPLE
     && regressionReport?.productionApproved !== false
     ? production
+    : null;
+  const usableSelectiveModel = selectiveProduction?.featureVersion === REGRESSION_FEATURE_VERSION
+    && selectiveProduction.trainingSampleSize >= MIN_REGRESSION_SAMPLE
+    && regressionReport?.selectiveProductionApproved === true
+    ? selectiveProduction
     : null;
   const snapshot: WinnerFeatureSnapshot = {
     analysisVersion: ANALYSIS_VERSION,
@@ -2516,6 +2523,19 @@ function winnerPrediction(game: MatchedGameContext, breakdown: Awaited<ReturnTyp
 
   const pick = homeProbability >= 0.5 ? game.home : game.away;
   const confidence = Math.max(homeProbability, 1 - homeProbability) * 100;
+  const selectiveHomeProbability = usableSelectiveModel
+    ? predictHomeWinProbability(usableSelectiveModel, snapshot)
+    : null;
+  const selectivePick = selectiveHomeProbability === null
+    ? null
+    : selectiveHomeProbability >= 0.5 ? game.home : game.away;
+  const selectiveConfidence = selectiveHomeProbability === null
+    ? null
+    : Math.max(selectiveHomeProbability, 1 - selectiveHomeProbability) * 100;
+  const selectiveConfirmation = method === "rolling-validated regression"
+    && selectivePick === pick
+    && selectiveConfidence !== null
+    && selectiveConfidence >= QUALIFIED_CONFIDENCE_THRESHOLD * 100;
   return {
     pick,
     homeProbability,
@@ -2525,7 +2545,10 @@ function winnerPrediction(game: MatchedGameContext, breakdown: Awaited<ReturnTyp
     method,
     validatedStrong: method === "rolling-validated regression"
       && marketHomeProbability !== null
-      && confidence >= 55,
+      && confidence >= QUALIFIED_CONFIDENCE_THRESHOLD * 100
+      && selectiveConfirmation,
+    selectiveConfirmation,
+    selectiveConfidence,
     heuristicPick: breakdown.lean,
     marketHomeProbability
   };
@@ -2614,9 +2637,15 @@ async function refreshRegressionArtifacts() {
 
   const trainingRows = buildRegressionTrainingRows(joined);
   const candidate = trainLogisticRegression(trainingRows);
+  const selectiveCandidate = trainLogisticRegression(trainingRows, SELECTIVE_FEATURE_NAMES);
   const storedProduction = readProductionRegressionModel();
   const production = storedProduction?.featureVersion === REGRESSION_FEATURE_VERSION ? storedProduction : null;
   const walkForward = evaluateWalkForwardRegression(trainingRows, MIN_REGRESSION_SAMPLE);
+  const selectiveWalkForward = evaluateWalkForwardRegression(
+    trainingRows,
+    MIN_REGRESSION_SAMPLE,
+    SELECTIVE_FEATURE_NAMES
+  );
   const walkForwardRows = walkForward.firstTestDate
     ? trainingRows.filter((row) => row.snapshotDate >= walkForward.firstTestDate!)
     : [];
@@ -2646,6 +2675,7 @@ async function refreshRegressionArtifacts() {
   };
   let promotedCandidate = false;
   let productionApproved = false;
+  let selectiveProductionApproved = false;
   const notes: string[] = [];
 
   if (candidate) {
@@ -2680,9 +2710,28 @@ async function refreshRegressionArtifacts() {
     } else {
       notes.push("Candidate regression stored but production use is paused until overall, recent, and qualified-tier gates all pass.");
     }
+  } else {
+    notes.push(`Regression needs at least ${MIN_REGRESSION_SAMPLE} completed games with matching pregame feature snapshots before training can begin.`);
+  }
+
+  if (selectiveCandidate) {
+    writeCandidateSelectiveRegressionModel(selectiveCandidate);
+    selectiveProductionApproved = Boolean(
+      productionApproved
+      && selectiveWalkForward.qualifiedMetrics
+      && selectiveWalkForward.qualifiedMetrics.sampleSize >= 30
+      && selectiveWalkForward.qualifiedMetrics.accuracy >= QUALIFIED_APPROVAL_MIN_ACCURACY
+      && selectiveWalkForward.recentQualifiedMetrics
+      && selectiveWalkForward.recentQualifiedMetrics.sampleSize >= QUALIFIED_APPROVAL_MIN_GAMES
+      && selectiveWalkForward.recentQualifiedMetrics.accuracy >= QUALIFIED_APPROVAL_MIN_ACCURACY
+    );
+    if (selectiveProductionApproved) {
+      writeProductionSelectiveRegressionModel(selectiveCandidate);
+      notes.push("Selective no-total confirmation model approved for dual-model best-bet gating.");
     } else {
-      notes.push(`Regression needs at least ${MIN_REGRESSION_SAMPLE} completed games with matching pregame feature snapshots before training can begin.`);
+      notes.push("Selective confirmation model is paused until overall and recent qualified tiers pass.");
     }
+  }
 
   if (trainingRows.length < MIN_REGRESSION_SAMPLE) {
     notes.push(`Currently stored: ${featureRows.length} pregame snapshots, ${storedResultRows.length} final results, ${trainingRows.length} joined training rows.`);
@@ -2706,6 +2755,10 @@ async function refreshRegressionArtifacts() {
     recentHeuristicMetrics,
     recentValidationStartDate: walkForward.recentStartDate,
     productionApproved,
+    selectiveProductionApproved,
+    selectiveWalkForwardMetrics: selectiveWalkForward.metrics,
+    selectiveQualifiedMetrics: selectiveWalkForward.qualifiedMetrics,
+    selectiveRecentQualifiedMetrics: selectiveWalkForward.recentQualifiedMetrics,
     promotedCandidate,
     notes
   };
@@ -2838,7 +2891,7 @@ async function chooseBestGeneralBet(game: MatchedGameContext) {
       tag: recommendation(winnerConfidence, 24, 12),
       score: winnerEdge,
       confidence: winnerConfidence,
-      reason: `The ${winner.method} gives **${winner.pick}** a calibrated ${formatNumber(winner.confidence)}% win probability, which clears the selective winner threshold.`
+      reason: `The primary and no-total confirmation regressions both support **${winner.pick}**; primary confidence is **${formatNumber(winner.confidence)}%** and selective confidence is **${formatNumber(winner.selectiveConfidence || 0)}%**.`
     };
   }
 
@@ -2928,7 +2981,7 @@ async function analyzeWinner(game: MatchedGameContext) {
       `Prediction engine: **${prediction.method}**. Conservative win-probability estimate: **${formatNumber(prediction.confidence)}%** for ${lean}. The raw weighted heuristic preferred **${prediction.heuristicPick}**${breakdown.marketLean ? ` and the no-vig market side is **${breakdown.marketLean}**` : ""}.`,
       `The core mix is offense ${formatNumber(breakdown.weights.offense * 100, 0)}%, total pitching 30% (starter ${formatNumber(breakdown.weights.starter * 100, 0)}% + bullpen ${formatNumber(breakdown.weights.bullpen * 100, 0)}%), recency/trend ${formatNumber(breakdown.weights.trend * 100, 0)}%, win-probability 10%, defense 5%, and park 2%. The bullpen share rises later in the season while total pitching remains fixed. Odds stay as context rather than part of the weighted core.`,
     `${game.awayBatters.length && game.homeBatters.length ? "This read is using matched lineup bats from the selected game context." : "Lineup coverage is partial, so treat this as a softer lean."}`,
-    `${tag} Recommendation: **${lean}** moneyline at **${formatNumber(prediction.confidence)}%** model confidence. ${prediction.validatedStrong ? "This clears the rolling-forward strong tier." : "This is a full-slate projection, not a validated high-confidence best bet."}`
+    `${tag} Recommendation: **${lean}** moneyline at **${formatNumber(prediction.confidence)}%** model confidence. ${prediction.validatedStrong ? "This clears the dual-model rolling-forward best-bet tier." : "This is a full-slate projection, not a validated high-confidence best bet."}`
   ].join("\n\n");
 }
 
@@ -3239,6 +3292,7 @@ app.get("/api/health", (_req, res) => {
   const stats = getCurrentStats();
   const regressionReport = readRegressionReport();
   const productionModel = readProductionRegressionModel();
+  const selectiveProductionModel = readProductionSelectiveRegressionModel();
   const candidateModel = readCandidateRegressionModel();
   const storage = getStorageStatus();
   const weights = winnerWeights();
@@ -3270,11 +3324,16 @@ app.get("/api/health", (_req, res) => {
     sourceHealth: sourceHealth(),
     regression: {
       productionModel: Boolean(productionModel),
+      selectiveProductionModel: Boolean(selectiveProductionModel),
       candidateModel: Boolean(candidateModel),
       lastReportAt: regressionReport?.generatedAt || null,
       trainingRows: regressionReport?.trainingRows || 0,
       promotedCandidate: regressionReport?.promotedCandidate || false,
       productionApproved: regressionReport?.productionApproved ?? null,
+      selectiveProductionApproved: regressionReport?.selectiveProductionApproved ?? null,
+      selectiveWalkForwardMetrics: regressionReport?.selectiveWalkForwardMetrics || null,
+      selectiveQualifiedMetrics: regressionReport?.selectiveQualifiedMetrics || null,
+      selectiveRecentQualifiedMetrics: regressionReport?.selectiveRecentQualifiedMetrics || null,
       recentWalkForwardMetrics: regressionReport?.recentWalkForwardMetrics || null,
       recentQualifiedMetrics: regressionReport?.recentQualifiedMetrics || null,
       recentForcedMetrics: regressionReport?.recentForcedMetrics || null,
@@ -3380,12 +3439,14 @@ app.post("/api/data/refresh", async (_req, res) => {
 app.get("/api/regression/report", (_req, res) => {
   const report = readRegressionReport();
   const productionModel = readProductionRegressionModel();
+  const selectiveProductionModel = readProductionSelectiveRegressionModel();
   const candidateModel = readCandidateRegressionModel();
   const storage = getStorageStatus();
   res.json({
     ok: true,
     report,
     productionModel,
+    selectiveProductionModel,
     candidateModel,
     featureRows: readWinnerFeatureSnapshots().length,
     resultRows: readWinnerResults().length,
