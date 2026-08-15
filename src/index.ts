@@ -2370,7 +2370,9 @@ function winnerPrediction(game: MatchedGameContext, breakdown: Awaited<ReturnTyp
     confidence,
     probabilityEdge: Math.abs(homeProbability - 0.5) * 200,
     method,
-    validatedStrong: method === "rolling-validated regression" && confidence >= 55,
+    validatedStrong: method === "rolling-validated regression"
+      && marketHomeProbability !== null
+      && confidence >= 55,
     heuristicPick: breakdown.lean,
     marketHomeProbability
   };
@@ -2643,7 +2645,7 @@ async function chooseBestGeneralBet(game: MatchedGameContext) {
     };
   }
 
-  if (winnerConfidence >= 55) {
+  if (winner.validatedStrong) {
     return {
       type: "Winner",
       tag: recommendation(winnerConfidence, 24, 12),
