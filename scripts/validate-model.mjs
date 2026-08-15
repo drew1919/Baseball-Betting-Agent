@@ -3,6 +3,7 @@ import { buildRegressionTrainingRows, predictHomeWinProbability, REGRESSION_FEAT
 import { evaluateHeuristicBaseline, evaluateWalkForwardRegression } from "../dist/model-evaluator.js";
 
 const databasePath = process.argv[2] || "data/app.db";
+const incompleteRecentDate = process.argv[3] || undefined;
 const db = new DatabaseSync(databasePath, { readOnly: true });
 const rawRows = db.prepare(`
   SELECT f.*, r.date, r.away_score, r.home_score, r.home_win
@@ -48,7 +49,7 @@ const joined = rawRows.map((row) => ({
 }));
 
 const trainingRows = buildRegressionTrainingRows(joined);
-const forward = evaluateWalkForwardRegression(trainingRows);
+const forward = evaluateWalkForwardRegression(trainingRows, 60, undefined, incompleteRecentDate);
 const noOddsRows = buildRegressionTrainingRows(joined.map((row) => ({
   ...row,
   awayMoneyline: null,
@@ -56,12 +57,14 @@ const noOddsRows = buildRegressionTrainingRows(joined.map((row) => ({
   total: null,
   marketLean: null
 })));
-const noOddsForward = evaluateWalkForwardRegression(noOddsRows);
+const noOddsForward = evaluateWalkForwardRegression(noOddsRows, 60, undefined, incompleteRecentDate);
 const testRows = forward.firstTestDate
   ? trainingRows.filter((row) => row.snapshotDate >= forward.firstTestDate)
   : [];
 const recentTestRows = forward.recentStartDate
-  ? trainingRows.filter((row) => row.snapshotDate >= forward.recentStartDate)
+  ? trainingRows.filter((row) =>
+      row.snapshotDate >= forward.recentStartDate && row.snapshotDate !== incompleteRecentDate
+    )
   : [];
 const candidate = trainLogisticRegression(trainingRows);
 const dates = [...new Set(trainingRows.map((row) => row.snapshotDate))].sort();
@@ -104,7 +107,9 @@ const highConfidence = predictions.filter(({ probability }) => Math.max(probabil
 const veryHighConfidence = predictions.filter(({ probability }) => Math.max(probability, 1 - probability) >= 0.60);
 const lowerConfidence = predictions.filter(({ probability }) => Math.max(probability, 1 - probability) < 0.55);
 const recentPredictions = forward.recentStartDate
-  ? predictions.filter(({ row }) => row.snapshotDate >= forward.recentStartDate)
+  ? predictions.filter(({ row }) =>
+      row.snapshotDate >= forward.recentStartDate && row.snapshotDate !== incompleteRecentDate
+    )
   : [];
 const recentHighConfidence = recentPredictions.filter(({ probability }) => Math.max(probability, 1 - probability) >= 0.55);
 const recentLowerConfidence = recentPredictions.filter(({ probability }) => Math.max(probability, 1 - probability) < 0.55);
@@ -123,10 +128,14 @@ const dualQualifiedDisagree = primaryQualifiedWithSelective.filter((entry) =>
   && entry.regressionPick !== entry.selective.regressionPick
 );
 const recentSelectiveQualified = forward.recentStartDate
-  ? selectiveQualified.filter(({ row }) => row.snapshotDate >= forward.recentStartDate)
+  ? selectiveQualified.filter(({ row }) =>
+      row.snapshotDate >= forward.recentStartDate && row.snapshotDate !== incompleteRecentDate
+    )
   : [];
 const recentDualQualifiedAgree = forward.recentStartDate
-  ? dualQualifiedAgree.filter(({ row }) => row.snapshotDate >= forward.recentStartDate)
+  ? dualQualifiedAgree.filter(({ row }) =>
+      row.snapshotDate >= forward.recentStartDate && row.snapshotDate !== incompleteRecentDate
+    )
   : [];
 const marketAvailable = predictions.filter(({ row }) => row.marketLean);
 const regressionMarketAgree = marketAvailable.filter((entry) => entry.regressionPick === entry.row.marketLean);
@@ -159,6 +168,7 @@ console.log(JSON.stringify({
   recentQualifiedForwardMetrics: forward.recentQualifiedMetrics,
   recentForcedForwardMetrics: forward.recentForcedMetrics,
   recentForwardStartDate: forward.recentStartDate,
+  incompleteRecentDate: incompleteRecentDate || null,
   recentHeuristicMetrics: evaluateHeuristicBaseline(recentTestRows),
   noOddsForwardMetrics: noOddsForward.metrics,
   oddsCoverage: {

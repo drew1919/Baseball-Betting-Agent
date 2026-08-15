@@ -2640,18 +2640,26 @@ async function refreshRegressionArtifacts() {
   const selectiveCandidate = trainLogisticRegression(trainingRows, SELECTIVE_FEATURE_NAMES);
   const storedProduction = readProductionRegressionModel();
   const production = storedProduction?.featureVersion === REGRESSION_FEATURE_VERSION ? storedProduction : null;
-  const walkForward = evaluateWalkForwardRegression(trainingRows, MIN_REGRESSION_SAMPLE);
+  const walkForward = evaluateWalkForwardRegression(
+    trainingRows,
+    MIN_REGRESSION_SAMPLE,
+    undefined,
+    endDate
+  );
   const selectiveWalkForward = evaluateWalkForwardRegression(
     trainingRows,
     MIN_REGRESSION_SAMPLE,
-    SELECTIVE_FEATURE_NAMES
+    SELECTIVE_FEATURE_NAMES,
+    endDate
   );
   const walkForwardRows = walkForward.firstTestDate
     ? trainingRows.filter((row) => row.snapshotDate >= walkForward.firstTestDate!)
     : [];
   const heuristicMetrics = evaluateHeuristicBaseline(walkForwardRows);
   const recentWalkForwardRows = walkForward.recentStartDate
-    ? trainingRows.filter((row) => row.snapshotDate >= walkForward.recentStartDate!)
+    ? trainingRows.filter((row) =>
+        row.snapshotDate >= walkForward.recentStartDate! && row.snapshotDate !== endDate
+      )
     : [];
   const recentHeuristicMetrics = evaluateHeuristicBaseline(recentWalkForwardRows);
   const productionMetrics = production && walkForwardRows.length
@@ -2754,6 +2762,7 @@ async function refreshRegressionArtifacts() {
     recentForcedMetrics: walkForward.recentForcedMetrics,
     recentHeuristicMetrics,
     recentValidationStartDate: walkForward.recentStartDate,
+    recentValidationExcludedDate: endDate,
     productionApproved,
     selectiveProductionApproved,
     selectiveWalkForwardMetrics: selectiveWalkForward.metrics,
@@ -3339,6 +3348,7 @@ app.get("/api/health", (_req, res) => {
       recentForcedMetrics: regressionReport?.recentForcedMetrics || null,
       recentHeuristicMetrics: regressionReport?.recentHeuristicMetrics || null,
       recentValidationStartDate: regressionReport?.recentValidationStartDate || null,
+      recentValidationExcludedDate: regressionReport?.recentValidationExcludedDate || null,
       approvalGate: {
         recentSlates: RECENT_VALIDATION_DATES,
         minimumRecentGames: RECENT_APPROVAL_MIN_GAMES,
