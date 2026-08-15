@@ -19,7 +19,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(process.cwd(), "public")));
 
 const PORT = process.env.PORT || 3000;
-const ANALYSIS_VERSION = "models-v8-forward-tested";
+const ANALYSIS_VERSION = "models-v8.1-rotowire-market-fallback";
 const CURRENT_SEASON = new Date().getFullYear();
 const PREVIOUS_SEASON = CURRENT_SEASON - 1;
 
@@ -40,6 +40,7 @@ const MODEL_DATA_CACHE_MS = 1000 * 60 * 60 * 6;
 const MODEL_DATA_MAX_AGE_MS = 1000 * 60 * 60 * 8;
 const SOURCE_STALE_MS = 1000 * 60 * 60 * 26;
 const WINNER_SCOREBOARD_CACHE_MS = 1000 * 60 * 2;
+const ROTOWIRE_MARKET_SHRINK = 0.915;
 const ODDS_API_BASE = "https://api.the-odds-api.com/v4/sports/baseball_mlb/odds";
 const ODDS_BOOKMAKER = process.env.ODDS_BOOKMAKER || "fanduel";
 const MORNING_REFRESH_TIME_ZONE = process.env.MORNING_REFRESH_TIME_ZONE || "America/New_York";
@@ -166,6 +167,8 @@ type MatchedGameContext = {
   homeStarter: GamePitcher | null;
   awayBatters: BatterStat[];
   homeBatters: BatterStat[];
+  rotowireLine: string | null;
+  rotowireTotal: number | null;
 };
 
 type FirstInningPitcherSplit = {
@@ -293,6 +296,7 @@ type GameOdds = {
   runLine: number | null;
   awayRunLinePrice: number | null;
   homeRunLinePrice: number | null;
+  estimated: boolean;
 };
 
 type TeamDefenseStat = {
@@ -1546,6 +1550,67 @@ function impliedProbability(american: number | null) {
   return null;
 }
 
+function americanOddsFromProbability(probability: number) {
+  if (!Number.isFinite(probability) || probability <= 0 || probability >= 1) return null;
+  return Math.round(probability >= 0.5
+    ? (-100 * probability) / (1 - probability)
+    : (100 * (1 - probability)) / probability);
+}
+
+function rotowireOddsForGame(game: MatchedGameContext): GameOdds | null {
+  const match = cleanText(game.rotowireLine || "").replace(/\u2212/g, "-").match(/\b([A-Z]{2,4})\s*([+-]\d{2,4})\b/);
+  if (!match) return null;
+  const listedTeam = resolveTeamKey(match[1]);
+  const listedPrice = Number(match[2]);
+  const listedImplied = impliedProbability(listedPrice);
+  if (!listedTeam || listedImplied === null || (listedTeam !== game.away && listedTeam !== game.home)) return null;
+
+  // Fitted on 183 stored two-sided markets: the listed-side implied edge is
+  // about 91.5% of its corresponding no-vig edge after removing the hold.
+  const listedFair = Math.max(0.05, Math.min(0.95,
+    0.5 + (listedImplied - 0.5) * ROTOWIRE_MARKET_SHRINK
+  ));
+  const awayProbability = listedTeam === game.away ? listedFair : 1 - listedFair;
+  const homeProbability = 1 - awayProbability;
+
+  return {
+    away: game.away,
+    home: game.home,
+    bookmaker: "RotoWire listed line (estimated no-vig)",
+    commenceTime: null,
+    lastUpdate: null,
+    awayMoneyline: americanOddsFromProbability(awayProbability),
+    homeMoneyline: americanOddsFromProbability(homeProbability),
+    total: game.rotowireTotal,
+    overPrice: null,
+    underPrice: null,
+    runLine: null,
+    awayRunLinePrice: null,
+    homeRunLinePrice: null,
+    estimated: true
+  };
+}
+
+function snapshotOddsForGame(snapshot: WinnerFeatureSnapshot | null): GameOdds | null {
+  if (!snapshot || snapshot.awayMoneyline === null || snapshot.homeMoneyline === null) return null;
+  return {
+    away: snapshot.away,
+    home: snapshot.home,
+    bookmaker: "Immutable pregame market snapshot",
+    commenceTime: null,
+    lastUpdate: null,
+    awayMoneyline: snapshot.awayMoneyline,
+    homeMoneyline: snapshot.homeMoneyline,
+    total: snapshot.total,
+    overPrice: null,
+    underPrice: null,
+    runLine: null,
+    awayRunLinePrice: null,
+    homeRunLinePrice: null,
+    estimated: snapshot.analysisVersion === ANALYSIS_VERSION
+  };
+}
+
 async function loadGameOdds() {
   if (isFresh(oddsCache)) {
     return oddsCache!.value;
@@ -1587,7 +1652,7 @@ async function loadGameOdds() {
     }>;
   }>;
 
-  const odds = data.map((event) => {
+  const odds = data.map((event): GameOdds | null => {
     const home = resolveTeamKey(cleanText(event.home_team || ""));
     const away = resolveTeamKey(cleanText(event.away_team || ""));
     const bookmaker = (event.bookmakers || [])[0];
@@ -1617,8 +1682,9 @@ async function loadGameOdds() {
       underPrice: underOutcome?.price ?? null,
       runLine: homeSpread?.point ?? awaySpread?.point ?? null,
       awayRunLinePrice: awaySpread?.price ?? null,
-      homeRunLinePrice: homeSpread?.price ?? null
-    } satisfies GameOdds;
+      homeRunLinePrice: homeSpread?.price ?? null,
+      estimated: false
+    };
   }).filter((value): value is GameOdds => value !== null);
 
   oddsCache = { fetchedAt: Date.now(), value: odds };
@@ -1626,12 +1692,21 @@ async function loadGameOdds() {
   return odds;
 }
 
-async function findOddsForGame(away: string, home: string) {
+async function findOddsForGame(
+  game: MatchedGameContext,
+  pregameSnapshot: WinnerFeatureSnapshot | null,
+  gameState: string | null
+) {
+  const frozenOdds = snapshotOddsForGame(pregameSnapshot);
+  if (frozenOdds) return frozenOdds;
+  if (gameState === null) return null;
+  if (gameState === "live" || gameState === "final" || gameState === "postponed") return null;
+
   const odds = await loadGameOdds();
-  const awayKey = resolveTeamKey(away);
-  const homeKey = resolveTeamKey(home);
+  const awayKey = resolveTeamKey(game.away);
+  const homeKey = resolveTeamKey(game.home);
   if (!awayKey || !homeKey) return null;
-  return odds.find((entry) => entry.away === awayKey && entry.home === homeKey) || null;
+  return odds.find((entry) => entry.away === awayKey && entry.home === homeKey) || rotowireOddsForGame(game);
 }
 
 async function scrapePublicSources() {
@@ -1934,6 +2009,9 @@ function matchGameContext(gameContext: string): MatchedGameContext | null {
 
   const awayPitcherName = gameContext.match(/Away starter:\s*([^|]+)/i)?.[1]?.trim() || "";
   const homePitcherName = gameContext.match(/Home starter:\s*([^|]+)/i)?.[1]?.trim() || "";
+  const rotowireLine = gameContext.match(/Moneyline:\s*([^\n]+)/i)?.[1]?.trim() || null;
+  const totalText = gameContext.match(/Over\/Under:\s*([\d.]+)/i)?.[1] || "";
+  const rotowireTotal = Number.parseFloat(totalText);
 
   return {
     away: teams.away,
@@ -1945,11 +2023,14 @@ function matchGameContext(gameContext: string): MatchedGameContext | null {
     awayBatters: compactBatters(collectNamedPlayersFromContext(gameContext, teams.away)
       .map((name) => findBatterStat(name))),
     homeBatters: compactBatters(collectNamedPlayersFromContext(gameContext, teams.home)
-      .map((name) => findBatterStat(name)))
+      .map((name) => findBatterStat(name))),
+    rotowireLine,
+    rotowireTotal: Number.isFinite(rotowireTotal) ? rotowireTotal : null
   };
 }
 
 function matchGameCard(card: GameCard): MatchedGameContext {
+  const parsedTotal = Number.parseFloat(card.ou || "");
   return {
     away: card.away,
     home: card.home,
@@ -1958,7 +2039,9 @@ function matchGameCard(card: GameCard): MatchedGameContext {
     awayStarter: card.awayP,
     homeStarter: card.homeP,
     awayBatters: compactBatters((card.awayLineup || []).map((batter) => findBatterStat(batter.name))),
-    homeBatters: compactBatters((card.homeLineup || []).map((batter) => findBatterStat(batter.name)))
+    homeBatters: compactBatters((card.homeLineup || []).map((batter) => findBatterStat(batter.name))),
+    rotowireLine: card.line,
+    rotowireTotal: Number.isFinite(parsedTotal) ? parsedTotal : null
   };
 }
 
@@ -2240,6 +2323,16 @@ async function winnerTrendScore(team: string, isHome: boolean) {
 }
 
 async function buildWinnerBreakdown(game: MatchedGameContext) {
+  const gameId = buildWinnerGameId(mlbCalendarDate(), game.away, game.home);
+  const pregameSnapshot = readWinnerFeatureSnapshots().find((snapshot) => snapshot.gameId === gameId) || null;
+  let gameState: string | null = null;
+  try {
+    const scoreboard = await refreshRecentWinnerScoreboard();
+    gameState = scoreboard.statuses.find((status) => status.gameId === gameId)?.state || null;
+  } catch {
+    // A missing scoreboard must not block local analysis; without a known state,
+    // only an existing immutable snapshot can safely supply market data.
+  }
   const awayTrend = await winnerTrendScore(game.away, false);
   const homeTrend = await winnerTrendScore(game.home, true);
   const [recentBatters, recentPitchers, bullpens] = await Promise.all([
@@ -2258,7 +2351,7 @@ async function buildWinnerBreakdown(game: MatchedGameContext) {
   const awayPitchingImpact = pitchingWinProb.get(resolveTeamKey(game.away) || "") || null;
   const homePitchingImpact = pitchingWinProb.get(resolveTeamKey(game.home) || "") || null;
   const parkFactor = parkFactors.get(resolveTeamKey(game.home) || "") || null;
-  const odds = await findOddsForGame(game.away, game.home);
+  const odds = await findOddsForGame(game, pregameSnapshot, gameState);
   const awayImplied = impliedProbability(odds?.awayMoneyline ?? null);
   const homeImplied = impliedProbability(odds?.homeMoneyline ?? null);
   const marketLean = awayImplied === null || homeImplied === null ? null : (homeImplied >= awayImplied ? game.home : game.away);
@@ -2327,6 +2420,8 @@ async function buildWinnerBreakdown(game: MatchedGameContext) {
     homeScore,
     edge,
     lean: edge >= 0 ? game.home : game.away,
+    pregameSnapshot,
+    gameState,
     odds,
     marketLean,
     awayImplied,
@@ -2340,6 +2435,27 @@ function winnerPrediction(game: MatchedGameContext, breakdown: Awaited<ReturnTyp
   const marketHomeProbability = breakdown.awayImplied !== null && breakdown.homeImplied !== null && impliedTotal
     ? breakdown.homeImplied / impliedTotal
     : null;
+  const isStarted = breakdown.gameState === "live" || breakdown.gameState === "final";
+  if (isStarted && breakdown.pregameSnapshot) {
+    const snapshot = breakdown.pregameSnapshot;
+    const snapshotConfidence = Math.max(50, Math.min(100, snapshot.heuristicConfidence));
+    const snapshotHomeProbability = snapshot.heuristicPick === game.home
+      ? snapshotConfidence / 100
+      : 1 - snapshotConfidence / 100;
+    return {
+      pick: snapshot.heuristicPick,
+      homeProbability: snapshotHomeProbability,
+      pickProbability: snapshotConfidence / 100,
+      confidence: snapshotConfidence,
+      probabilityEdge: (snapshotConfidence - 50) * 2,
+      method: "immutable pregame prediction",
+      validatedStrong: snapshot.awayMoneyline !== null
+        && snapshot.homeMoneyline !== null
+        && snapshotConfidence >= 55,
+      heuristicPick: snapshot.heuristicPick,
+      marketHomeProbability
+    };
+  }
   const production = readProductionRegressionModel();
   const usableModel = production?.featureVersion === REGRESSION_FEATURE_VERSION
     && production.trainingSampleSize >= MIN_REGRESSION_SAMPLE
@@ -2457,7 +2573,13 @@ async function buildWinnerFeatureSnapshot(game: MatchedGameContext, snapshotDate
 }
 
 async function snapshotWinnerFeaturesForGames(games: MatchedGameContext[], snapshotDate: string) {
-  const snapshots = await Promise.all(games.map((game) => buildWinnerFeatureSnapshot(game, snapshotDate)));
+  const scoreboard = await refreshRecentWinnerScoreboard();
+  const statuses = new Map(scoreboard.statuses.map((status) => [status.gameId, status.state]));
+  const eligibleGames = games.filter((game) => {
+    const gameId = buildWinnerGameId(snapshotDate, game.away, game.home);
+    return statuses.get(gameId) === "scheduled";
+  });
+  const snapshots = await Promise.all(eligibleGames.map((game) => buildWinnerFeatureSnapshot(game, snapshotDate)));
   return upsertWinnerFeatureSnapshots(snapshots);
 }
 
@@ -3100,6 +3222,8 @@ app.get("/api/health", (_req, res) => {
     oddsSourceConfigured: Boolean(cleanText(process.env.ODDS_API_KEY || "")),
     oddsSourceError: oddsLastError,
     oddsBookmaker: ODDS_BOOKMAKER,
+    oddsFallback: "RotoWire listed moneyline (estimated no-vig)",
+    rotowireMarketShrink: ROTOWIRE_MARKET_SHRINK,
     statCounts: {
       batters: stats.batters.length,
       pitchers: stats.pitchers.length
@@ -3148,6 +3272,7 @@ app.get("/api/odds", async (_req, res) => {
       bookmaker: ODDS_BOOKMAKER,
       configured: Boolean(cleanText(process.env.ODDS_API_KEY || "")),
       sourceError: oddsLastError,
+      fallback: "RotoWire listed moneylines are used in winner analysis when primary odds are unavailable.",
       games: odds
     });
   } catch (error) {

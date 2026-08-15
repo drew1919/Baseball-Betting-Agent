@@ -58,7 +58,7 @@ Open [http://localhost:3000](http://localhost:3000).
 | `EXPECTED_BATTERS_CSV_PATH` | No | `data/expected_stats_batters.csv` | Optional custom expected-stat CSV path |
 | `EXPECTED_PITCHERS_CSV_PATH` | No | `data/expected_stats_pitchers.csv` | Optional custom expected-stat CSV path |
 
-The analysis engine runs without API keys. Live odds are omitted when `ODDS_API_KEY` is not configured.
+The analysis engine runs without API keys. When primary two-sided odds are unavailable, winner analysis uses RotoWire's listed pregame moneyline and an empirically fitted hold correction to estimate a complementary no-vig market probability.
 
 ## Refresh Behavior
 
@@ -68,12 +68,13 @@ The analysis engine runs without API keys. Live odds are omitted when `ODDS_API_
 - Expected-stat files are validated for minimum coverage and replaced atomically; empty scraper output cannot overwrite good data.
 - Source attempts, successes, row counts, errors, ages, and stale flags are exposed through `/api/health`.
 - The first pregame feature snapshot for a matchup/date is immutable. Page loads and later refreshes cannot rewrite history with in-game or postgame data.
+- First-time snapshots are created only while MLB reports a game as scheduled. Once play begins, winner analysis keeps the immutable pregame pick and market input rather than consuming moving in-game lines.
 
 The scheduler is timezone-explicit, so the Oracle VM's operating-system timezone no longer changes the capture time.
 
 ## Model Diagnostics
 
-Run `npm run validate:model -- data/app.db` to evaluate the exact regression implementation with rolling daily holdouts. Run `npm run analyze:history -- data/app.db` for recent performance, market agreement, side bias, and feature-variance diagnostics. These are forward-looking checks; in-sample accuracy is not used as evidence for promotion.
+Run `npm run validate:model -- data/app.db` to evaluate the exact regression implementation with rolling daily holdouts. Run `npm run analyze:history -- data/app.db` for recent performance, market agreement, side bias, and feature-variance diagnostics. Run `npm run calibrate:rotowire -- data/app.db` to refit/check the one-sided-line hold correction against stored two-sided markets. These are forward-looking checks; in-sample accuracy is not used as evidence for promotion.
 
 ## Persistent Data
 
