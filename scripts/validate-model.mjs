@@ -60,6 +60,9 @@ const noOddsForward = evaluateWalkForwardRegression(noOddsRows);
 const testRows = forward.firstTestDate
   ? trainingRows.filter((row) => row.snapshotDate >= forward.firstTestDate)
   : [];
+const recentTestRows = forward.recentStartDate
+  ? trainingRows.filter((row) => row.snapshotDate >= forward.recentStartDate)
+  : [];
 const candidate = trainLogisticRegression(trainingRows);
 const dates = [...new Set(trainingRows.map((row) => row.snapshotDate))].sort();
 const predictions = [];
@@ -91,6 +94,11 @@ function segmentMetrics(segment, picker) {
 const highConfidence = predictions.filter(({ probability }) => Math.max(probability, 1 - probability) >= 0.55);
 const veryHighConfidence = predictions.filter(({ probability }) => Math.max(probability, 1 - probability) >= 0.60);
 const lowerConfidence = predictions.filter(({ probability }) => Math.max(probability, 1 - probability) < 0.55);
+const recentPredictions = forward.recentStartDate
+  ? predictions.filter(({ row }) => row.snapshotDate >= forward.recentStartDate)
+  : [];
+const recentHighConfidence = recentPredictions.filter(({ probability }) => Math.max(probability, 1 - probability) >= 0.55);
+const recentLowerConfidence = recentPredictions.filter(({ probability }) => Math.max(probability, 1 - probability) < 0.55);
 const marketAvailable = predictions.filter(({ row }) => row.marketLean);
 const regressionMarketAgree = marketAvailable.filter((entry) => entry.regressionPick === entry.row.marketLean);
 const regressionMarketDisagree = marketAvailable.filter((entry) => entry.regressionPick !== entry.row.marketLean);
@@ -118,6 +126,11 @@ console.log(JSON.stringify({
   candidateVersion: candidate?.featureVersion || null,
   firstForwardTestDate: forward.firstTestDate,
   forwardMetrics: forward.metrics,
+  recentForwardMetrics: forward.recentMetrics,
+  recentQualifiedForwardMetrics: forward.recentQualifiedMetrics,
+  recentForcedForwardMetrics: forward.recentForcedMetrics,
+  recentForwardStartDate: forward.recentStartDate,
+  recentHeuristicMetrics: evaluateHeuristicBaseline(recentTestRows),
   noOddsForwardMetrics: noOddsForward.metrics,
   oddsCoverage: {
     gamesWithMoneylines: joined.filter((row) => row.awayMoneyline !== null && row.homeMoneyline !== null).length,
@@ -128,6 +141,8 @@ console.log(JSON.stringify({
     regressionHighConfidence: segmentMetrics(highConfidence, (entry) => entry.regressionPick),
     regressionCalibrated60Plus: segmentMetrics(veryHighConfidence, (entry) => entry.regressionPick),
     regressionLowerConfidence: segmentMetrics(lowerConfidence, (entry) => entry.regressionPick),
+    recentRegressionHighConfidence: segmentMetrics(recentHighConfidence, (entry) => entry.regressionPick),
+    recentRegressionLowerConfidence: segmentMetrics(recentLowerConfidence, (entry) => entry.regressionPick),
     market: segmentMetrics(marketAvailable, (entry) => entry.row.marketLean),
     regressionMarketAgree: segmentMetrics(regressionMarketAgree, (entry) => entry.regressionPick),
     regressionMarketDisagree: segmentMetrics(regressionMarketDisagree, (entry) => entry.regressionPick),

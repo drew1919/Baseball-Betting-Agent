@@ -1,8 +1,32 @@
 import type { LogisticRegressionModel, ModelMetrics, RegressionTrainingRow } from "./regression-types.js";
 import { predictHomeWinProbability, trainLogisticRegression } from "./regression-trainer.js";
 
+export const RECENT_VALIDATION_DATES = 5;
+export const QUALIFIED_CONFIDENCE_THRESHOLD = 0.55;
+
 function clampProbability(value: number) {
   return Math.max(0.0001, Math.min(0.9999, value));
+}
+
+function predictionMetrics(predictions: Array<{ probability: number; outcome: 0 | 1 }>): ModelMetrics | null {
+  if (!predictions.length) return null;
+  let correct = 0;
+  let logLoss = 0;
+  let brierScore = 0;
+  let probabilitySum = 0;
+  predictions.forEach(({ probability, outcome }) => {
+    if ((probability >= 0.5 ? 1 : 0) === outcome) correct += 1;
+    logLoss += -(outcome * Math.log(probability) + (1 - outcome) * Math.log(1 - probability));
+    brierScore += (probability - outcome) ** 2;
+    probabilitySum += probability;
+  });
+  return {
+    sampleSize: predictions.length,
+    accuracy: correct / predictions.length,
+    logLoss: logLoss / predictions.length,
+    brierScore: brierScore / predictions.length,
+    averageProbability: probabilitySum / predictions.length
+  };
 }
 
 export function evaluateRegressionModel(model: LogisticRegressionModel, rows: RegressionTrainingRow[]): ModelMetrics | null {
@@ -61,9 +85,16 @@ export function evaluateHeuristicBaseline(rows: RegressionTrainingRow[]): ModelM
 export function evaluateWalkForwardRegression(
   rows: RegressionTrainingRow[],
   minimumTrainingRows = 60
-): { metrics: ModelMetrics | null; firstTestDate: string | null } {
+): {
+  metrics: ModelMetrics | null;
+  firstTestDate: string | null;
+  recentMetrics: ModelMetrics | null;
+  recentQualifiedMetrics: ModelMetrics | null;
+  recentForcedMetrics: ModelMetrics | null;
+  recentStartDate: string | null;
+} {
   const dates = [...new Set(rows.map((row) => row.snapshotDate))].sort();
-  const predictions: Array<{ probability: number; outcome: 0 | 1 }> = [];
+  const predictions: Array<{ probability: number; outcome: 0 | 1; date: string }> = [];
   let firstTestDate: string | null = null;
 
   dates.forEach((date) => {
@@ -73,29 +104,36 @@ export function evaluateWalkForwardRegression(
     if (!model) return;
     if (!firstTestDate) firstTestDate = date;
     rows.filter((row) => row.snapshotDate === date).forEach((row) => {
-      predictions.push({ probability: clampProbability(predictHomeWinProbability(model, row)), outcome: row.homeWin });
+      predictions.push({ probability: clampProbability(predictHomeWinProbability(model, row)), outcome: row.homeWin, date });
     });
   });
 
-  if (!predictions.length) return { metrics: null, firstTestDate };
-  let correct = 0;
-  let logLoss = 0;
-  let brierScore = 0;
-  let probabilitySum = 0;
-  predictions.forEach(({ probability, outcome }) => {
-    if ((probability >= 0.5 ? 1 : 0) === outcome) correct += 1;
-    logLoss += -(outcome * Math.log(probability) + (1 - outcome) * Math.log(1 - probability));
-    brierScore += (probability - outcome) ** 2;
-    probabilitySum += probability;
-  });
+  if (!predictions.length) return {
+    metrics: null,
+    firstTestDate,
+    recentMetrics: null,
+    recentQualifiedMetrics: null,
+    recentForcedMetrics: null,
+    recentStartDate: null
+  };
+  const predictionDates = [...new Set(predictions.map((prediction) => prediction.date))].sort();
+  const recentDates = predictionDates.slice(-RECENT_VALIDATION_DATES);
+  const recentStartDate = recentDates[0] || null;
+  const recentPredictions = recentStartDate
+    ? predictions.filter((prediction) => prediction.date >= recentStartDate)
+    : [];
+  const recentQualified = recentPredictions.filter(({ probability }) =>
+    Math.max(probability, 1 - probability) >= QUALIFIED_CONFIDENCE_THRESHOLD
+  );
+  const recentForced = recentPredictions.filter(({ probability }) =>
+    Math.max(probability, 1 - probability) < QUALIFIED_CONFIDENCE_THRESHOLD
+  );
   return {
     firstTestDate,
-    metrics: {
-      sampleSize: predictions.length,
-      accuracy: correct / predictions.length,
-      logLoss: logLoss / predictions.length,
-      brierScore: brierScore / predictions.length,
-      averageProbability: probabilitySum / predictions.length
-    }
+    metrics: predictionMetrics(predictions),
+    recentMetrics: predictionMetrics(recentPredictions),
+    recentQualifiedMetrics: predictionMetrics(recentQualified),
+    recentForcedMetrics: predictionMetrics(recentForced),
+    recentStartDate
   };
 }
