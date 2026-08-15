@@ -209,6 +209,8 @@
   .badge.correct { background: var(--green-dim); color: var(--green); }
   .badge.incorrect { background: var(--red-dim); color: var(--red); }
   .badge.pending { background: var(--amber-dim); color: var(--amber); }
+  .badge.live { background: rgba(56, 189, 248, 0.14); color: #38bdf8; }
+  .badge.postponed { background: rgba(251, 146, 60, 0.14); color: #fb923c; }
   .badge.stale { background: rgba(148, 163, 184, 0.14); color: #94a3b8; }
 
   .badge::before {
@@ -334,6 +336,10 @@
 
     const resultBadge = game.status === 'pending'
       ? `<span class="badge pending">PENDING</span>`
+      : game.status === 'live'
+        ? `<span class="badge live">LIVE</span>`
+        : game.status === 'postponed'
+          ? `<span class="badge postponed">POSTPONED</span>`
       : game.status === 'stale'
         ? `<span class="badge stale">STALE SLATE</span>`
         : game.correct
@@ -382,8 +388,8 @@
       document.getElementById('heuristicAccuracy').textContent = fmtPct(data.summary.accuracy);
       document.getElementById('heuristicSub').textContent =
         data.summary.gradedCount
-          ? `${data.summary.correctCount}/${data.summary.gradedCount} graded · ${data.summary.pendingCount} pending · ${data.summary.staleCount || 0} stale excluded`
-          : `no graded picks yet · ${data.summary.pendingCount} pending · ${data.summary.staleCount || 0} stale excluded`;
+          ? `${data.summary.correctCount}/${data.summary.gradedCount} graded · ${data.summary.liveCount || 0} live · ${data.summary.pendingCount} pending · ${data.summary.staleCount || 0} stale excluded`
+          : `no graded picks yet · ${data.summary.liveCount || 0} live · ${data.summary.pendingCount} pending · ${data.summary.staleCount || 0} stale excluded`;
 
       document.getElementById('marketAccuracy').textContent = fmtPct(data.summary.marketAccuracy);
       document.getElementById('marketSub').textContent =
@@ -405,6 +411,7 @@
   }
 
   load();
+  setInterval(load, 120000);
 </script>
 </body>
 </html>

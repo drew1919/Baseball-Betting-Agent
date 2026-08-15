@@ -7,7 +7,7 @@ import { renderPage } from "./page.js";
 import { STATS, type BatterStat, type PitcherStat } from "./stats.js";
 import { getAugmentedStats, getExpectedStatsCsvPaths, getExpectedStatsCsvWritePaths } from "./augmented-stats.js";
 import { upsertWinnerFeatureSnapshots, upsertWinnerResults, readWinnerFeatureSnapshots, readWinnerResults, readProductionRegressionModel, readCandidateRegressionModel, writeCandidateRegressionModel, writeProductionRegressionModel, readRegressionReport, writeRegressionReport, getStorageStatus } from "./feature-store.js";
-import { buildWinnerGameId, fetchWinnerResults } from "./results-fetcher.js";
+import { buildWinnerGameId, fetchWinnerResults, fetchWinnerScoreboard, type WinnerScoreboard } from "./results-fetcher.js";
 import { buildRegressionTrainingRows, MIN_REGRESSION_SAMPLE, predictHomeWinProbability, REGRESSION_FEATURE_VERSION, trainLogisticRegression } from "./regression-trainer.js";
 import { evaluateHeuristicBaseline, evaluateRegressionModel, evaluateWalkForwardRegression } from "./model-evaluator.js";
 import type { RegressionReport, WinnerFeatureSnapshot } from "./regression-types.js";
@@ -39,6 +39,7 @@ const SEARCH_CACHE_MS = 1000 * 60 * 20;
 const MODEL_DATA_CACHE_MS = 1000 * 60 * 60 * 6;
 const MODEL_DATA_MAX_AGE_MS = 1000 * 60 * 60 * 8;
 const SOURCE_STALE_MS = 1000 * 60 * 60 * 26;
+const WINNER_SCOREBOARD_CACHE_MS = 1000 * 60 * 2;
 const ODDS_API_BASE = "https://api.the-odds-api.com/v4/sports/baseball_mlb/odds";
 const ODDS_BOOKMAKER = process.env.ODDS_BOOKMAKER || "fanduel";
 const MORNING_REFRESH_TIME_ZONE = process.env.MORNING_REFRESH_TIME_ZONE || "America/New_York";
@@ -353,6 +354,8 @@ let teamParkFactorPromise: Promise<Map<string, TeamParkFactorStat>> | null = nul
 let recentPlayerPromise: Promise<void> | null = null;
 let teamBullpenPromise: Promise<Map<string, TeamBullpenStat>> | null = null;
 let refreshPromise: Promise<void> | null = null;
+let winnerScoreboardCache: CacheEntry<WinnerScoreboard> | null = null;
+let winnerScoreboardPromise: Promise<WinnerScoreboard> | null = null;
 let nextMorningRefreshAt: string | null = null;
 let lastMorningRefreshAt: string | null = null;
 let lastMorningRefreshStatus: "idle" | "ok" | "degraded" | "error" = "idle";
@@ -376,6 +379,33 @@ function mlbCalendarDate(date = new Date()) {
   }).formatToParts(date);
   const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return `${value.year}-${value.month}-${value.day}`;
+}
+
+function shiftIsoDate(date: string, days: number) {
+  const shifted = new Date(`${date}T12:00:00Z`);
+  shifted.setUTCDate(shifted.getUTCDate() + days);
+  return shifted.toISOString().slice(0, 10);
+}
+
+async function refreshRecentWinnerScoreboard(force = false) {
+  if (!force && winnerScoreboardCache && Date.now() - winnerScoreboardCache.fetchedAt < WINNER_SCOREBOARD_CACHE_MS) {
+    return winnerScoreboardCache.value;
+  }
+  if (winnerScoreboardPromise) return await winnerScoreboardPromise;
+
+  winnerScoreboardPromise = (async () => {
+    const today = mlbCalendarDate();
+    const scoreboard = await fetchWinnerScoreboard(shiftIsoDate(today, -2), today);
+    upsertWinnerResults(scoreboard.results);
+    winnerScoreboardCache = { fetchedAt: Date.now(), value: scoreboard };
+    return scoreboard;
+  })();
+
+  try {
+    return await winnerScoreboardPromise;
+  } finally {
+    winnerScoreboardPromise = null;
+  }
 }
 
 function zonedParts(date: Date, timeZone: string) {
@@ -3194,7 +3224,7 @@ app.get("/api/regression/report", (_req, res) => {
   });
 });
 
-app.get("/api/recommendations/history", (req, res) => {
+app.get("/api/recommendations/history", async (req, res) => {
   const requestedDays = Number.parseInt(String(req.query.days || "14"), 10);
   const days = Number.isFinite(requestedDays) ? Math.max(1, Math.min(365, requestedDays)) : 14;
   const todayDate = mlbCalendarDate();
@@ -3202,15 +3232,16 @@ app.get("/api/recommendations/history", (req, res) => {
   const cutoff = new Date(todayTime);
   cutoff.setUTCDate(cutoff.getUTCDate() - (days - 1));
 
+  let recentScoreboard: WinnerScoreboard | null = null;
+  try {
+    recentScoreboard = await refreshRecentWinnerScoreboard();
+  } catch (error) {
+    console.warn("Winner result reconciliation failed; serving stored results:", getErrorMessage(error));
+  }
+
   const results = readWinnerResults();
   const resultsByGameId = new Map(results.map((result) => [result.gameId, result]));
-  const resultsByMatchup = new Map<string, typeof results>();
-  results.forEach((result) => {
-    const key = `${result.away}_${result.home}`;
-    const rows = resultsByMatchup.get(key) || [];
-    rows.push(result);
-    resultsByMatchup.set(key, rows);
-  });
+  const statusesByGameId = new Map((recentScoreboard?.statuses || []).map((status) => [status.gameId, status]));
 
   const games = readWinnerFeatureSnapshots()
     .filter((snapshot) => {
@@ -3220,14 +3251,25 @@ app.get("/api/recommendations/history", (req, res) => {
     .map((snapshot) => {
       const exactResult = resultsByGameId.get(snapshot.gameId) || null;
       const snapshotTime = Date.parse(`${snapshot.snapshotDate}T00:00:00Z`);
-      const nearestPriorResult = (resultsByMatchup.get(`${snapshot.away}_${snapshot.home}`) || [])
-        .map((result) => ({ result, distance: (snapshotTime - Date.parse(`${result.date}T00:00:00Z`)) / 86_400_000 }))
-        .filter(({ distance }) => distance >= 0 && distance <= 4)
-        .sort((a, b) => a.distance - b.distance)[0]?.result || null;
+      const currentStatus = statusesByGameId.get(snapshot.gameId) || null;
       const isPast = snapshotTime < todayTime;
-      const status = exactResult ? "graded" : isPast ? "stale" : "pending";
-      const result = exactResult || (status === "stale" ? nearestPriorResult : null);
-      const actualWinner = result ? (result.homeWin ? result.home : result.away) : null;
+      const status = exactResult
+        ? "graded"
+        : currentStatus?.state === "live"
+          ? "live"
+          : currentStatus?.state === "postponed"
+            ? "postponed"
+            : isPast
+              ? "stale"
+              : "pending";
+      const actualWinner = exactResult ? (exactResult.homeWin ? exactResult.home : exactResult.away) : null;
+      const displayedScore = exactResult
+        ? `${exactResult.awayScore}-${exactResult.homeScore}`
+        : currentStatus?.state === "live"
+          && currentStatus.awayScore !== null && currentStatus.awayScore !== undefined
+          && currentStatus?.homeScore !== null && currentStatus?.homeScore !== undefined
+          ? `${currentStatus.awayScore}-${currentStatus.homeScore}`
+          : null;
       return {
         date: snapshot.snapshotDate,
         gameId: snapshot.gameId,
@@ -3237,8 +3279,9 @@ app.get("/api/recommendations/history", (req, res) => {
         status,
         correct: exactResult ? snapshot.heuristicPick === actualWinner : null,
         actualWinner,
-        resultDate: result?.date || null,
-        finalScore: result ? `${result.awayScore}-${result.homeScore}` : null,
+        resultDate: exactResult?.date || null,
+        finalScore: displayedScore,
+        gameStateDetail: currentStatus?.detailedState || null,
         edge: snapshot.heuristicEdge,
         confidence: snapshot.heuristicConfidence,
         marketLean: snapshot.marketLean,
@@ -3272,6 +3315,8 @@ app.get("/api/recommendations/history", (req, res) => {
       correctCount,
       staleCount: stale.length,
       pendingCount: games.filter((game) => game.status === "pending").length,
+      liveCount: games.filter((game) => game.status === "live").length,
+      postponedCount: games.filter((game) => game.status === "postponed").length,
       accuracy: graded.length ? correctCount / graded.length : null,
       marketGradedCount: marketGraded.length,
       marketCorrectCount,
@@ -3324,4 +3369,9 @@ app.listen(PORT, () => {
     console.warn("Startup refresh failed:", lastMorningRefreshError);
   });
   scheduleMorningRefresh();
+  setInterval(() => {
+    refreshRecentWinnerScoreboard(true).catch((error) => {
+      console.warn("Scheduled winner result reconciliation failed:", getErrorMessage(error));
+    });
+  }, WINNER_SCOREBOARD_CACHE_MS);
 });
