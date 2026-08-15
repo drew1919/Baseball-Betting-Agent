@@ -1,5 +1,21 @@
 import type { WinnerResultRow } from "./regression-types.js";
 
+export type WinnerGameStatus = {
+  date: string;
+  gameId: string;
+  away: string;
+  home: string;
+  awayScore: number | null;
+  homeScore: number | null;
+  state: "scheduled" | "live" | "final" | "postponed";
+  detailedState: string;
+};
+
+export type WinnerScoreboard = {
+  results: WinnerResultRow[];
+  statuses: WinnerGameStatus[];
+};
+
 function cleanText(value = "") {
   return String(value).replace(/\s+/g, " ").trim();
 }
@@ -59,7 +75,7 @@ export function buildWinnerGameId(date: string, away: string, home: string) {
   return `${date}_${away}_${home}`;
 }
 
-export async function fetchWinnerResults(startDate: string, endDate: string) {
+export async function fetchWinnerScoreboard(startDate: string, endDate: string): Promise<WinnerScoreboard> {
   const res = await fetch(`https://statsapi.mlb.com/api/v1/schedule?sportId=1&gameType=R&startDate=${startDate}&endDate=${endDate}`, {
     headers: {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
@@ -74,7 +90,7 @@ export async function fetchWinnerResults(startDate: string, endDate: string) {
     dates?: Array<{
       date?: string;
       games?: Array<{
-        status?: { abstractGameState?: string };
+        status?: { abstractGameState?: string; detailedState?: string; codedGameState?: string };
         teams?: {
           away?: { team?: { name?: string }; score?: number };
           home?: { team?: { name?: string }; score?: number };
@@ -84,18 +100,32 @@ export async function fetchWinnerResults(startDate: string, endDate: string) {
   };
 
   const rows: WinnerResultRow[] = [];
+  const statuses: WinnerGameStatus[] = [];
   (data.dates || []).forEach((dateEntry) => {
     const gameDate = cleanText(dateEntry.date || "");
     (dateEntry.games || []).forEach((game) => {
-      if (game.status?.abstractGameState !== "Final") return;
       const away = resolveTeamKey(cleanText(game.teams?.away?.team?.name || ""));
       const home = resolveTeamKey(cleanText(game.teams?.home?.team?.name || ""));
       if (!away || !home || !gameDate) return;
-      const awayScore = Number(game.teams?.away?.score || 0);
-      const homeScore = Number(game.teams?.home?.score || 0);
+      const awayScoreValue = game.teams?.away?.score;
+      const homeScoreValue = game.teams?.home?.score;
+      const awayScore = Number.isFinite(awayScoreValue) ? Number(awayScoreValue) : null;
+      const homeScore = Number.isFinite(homeScoreValue) ? Number(homeScoreValue) : null;
+      const abstractState = cleanText(game.status?.abstractGameState || "");
+      const detailedState = cleanText(game.status?.detailedState || "");
+      const state = abstractState === "Final" || game.status?.codedGameState === "F"
+        ? "final"
+        : abstractState === "Live"
+          ? "live"
+          : /postponed|cancelled|suspended/i.test(detailedState)
+            ? "postponed"
+            : "scheduled";
+      const gameId = buildWinnerGameId(gameDate, away, home);
+      statuses.push({ date: gameDate, gameId, away, home, awayScore, homeScore, state, detailedState });
+      if (state !== "final" || awayScore === null || homeScore === null) return;
       rows.push({
         date: gameDate,
-        gameId: buildWinnerGameId(gameDate, away, home),
+        gameId,
         away,
         home,
         awayScore,
@@ -105,5 +135,9 @@ export async function fetchWinnerResults(startDate: string, endDate: string) {
     });
   });
 
-  return rows;
+  return { results: rows, statuses };
+}
+
+export async function fetchWinnerResults(startDate: string, endDate: string) {
+  return (await fetchWinnerScoreboard(startDate, endDate)).results;
 }
