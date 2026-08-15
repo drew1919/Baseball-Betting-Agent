@@ -338,6 +338,7 @@ let firstInningBatterCache: CacheEntry<Map<string, FirstInningBatterSplit>> | nu
 let teamRunDiffCache: CacheEntry<Map<string, TeamRunDifferential>> | null = null;
 let teamLastFiveCache: CacheEntry<Map<string, TeamRecentForm>> | null = null;
 let oddsCache: CacheEntry<GameOdds[]> | null = null;
+let oddsLastError: string | null = null;
 let teamDefenseCache: CacheEntry<Map<string, TeamDefenseStat>> | null = null;
 let teamBattingWinProbCache: CacheEntry<Map<string, TeamWinProbStat>> | null = null;
 let teamPitchingWinProbCache: CacheEntry<Map<string, TeamWinProbStat>> | null = null;
@@ -1522,6 +1523,7 @@ async function loadGameOdds() {
 
   const apiKey = cleanText(process.env.ODDS_API_KEY || "");
   if (!apiKey) {
+    oddsLastError = null;
     oddsCache = { fetchedAt: Date.now(), value: [] };
     return [];
   }
@@ -1534,7 +1536,10 @@ async function loadGameOdds() {
   });
 
   if (!res.ok) {
-    throw new Error(`Fetch failed ${res.status} for odds API`);
+    oddsLastError = `Fetch failed ${res.status} for odds API`;
+    console.warn(`${oddsLastError}; continuing without market odds.`);
+    oddsCache = { fetchedAt: Date.now(), value: [] };
+    return [];
   }
 
   const data = (await res.json()) as Array<{
@@ -1587,6 +1592,7 @@ async function loadGameOdds() {
   }).filter((value): value is GameOdds => value !== null);
 
   oddsCache = { fetchedAt: Date.now(), value: odds };
+  oddsLastError = null;
   return odds;
 }
 
@@ -3060,6 +3066,7 @@ app.get("/api/health", (_req, res) => {
     analysisVersion: ANALYSIS_VERSION,
     publicSourceCount: 10,
     oddsSourceConfigured: Boolean(cleanText(process.env.ODDS_API_KEY || "")),
+    oddsSourceError: oddsLastError,
     oddsBookmaker: ODDS_BOOKMAKER,
     statCounts: {
       batters: stats.batters.length,
@@ -3108,6 +3115,7 @@ app.get("/api/odds", async (_req, res) => {
       ok: true,
       bookmaker: ODDS_BOOKMAKER,
       configured: Boolean(cleanText(process.env.ODDS_API_KEY || "")),
+      sourceError: oddsLastError,
       games: odds
     });
   } catch (error) {
