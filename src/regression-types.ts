@@ -1,4 +1,5 @@
 export type WinnerFeatureSnapshot = {
+  analysisVersion?: string;
   snapshotDate: string;
   gameId: string;
   away: string;
@@ -55,6 +56,7 @@ export type RegressionTrainingRow = WinnerFeatureSnapshot & WinnerResultRow & {
 };
 
 export type LogisticRegressionModel = {
+  featureVersion?: number;
   featureNames: string[];
   means: number[];
   stds: number[];
@@ -93,6 +95,8 @@ export type RegressionReport = {
   heuristicMetrics: ModelMetrics | null;
   productionMetrics: ModelMetrics | null;
   candidateMetrics: ModelMetrics | null;
+  walkForwardMetrics?: ModelMetrics | null;
+  walkForwardStartDate?: string | null;
   promotedCandidate: boolean;
   notes: string[];
 };

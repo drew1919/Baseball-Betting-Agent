@@ -6,7 +6,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/index.ts",
-    "start": "npm run build && node dist/index.js"
+    "start": "npm run build && node dist/index.js",
+    "analyze:history": "node scripts/analyze-history.mjs",
+    "validate:model": "npm run build && node scripts/validate-model.mjs"
   },
   "dependencies": {
     "cheerio": "^1.0.0",
