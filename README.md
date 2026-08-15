@@ -4,6 +4,8 @@ A baseball betting analysis app that combines current MLB data, Statcast expecte
 
 Winner projections use the regression only after its training procedure beats the stored-pick baseline on chronologically later games. Approval must pass the full forward window, the latest five eligible slates, and a qualified-tier gate requiring at least 60% accuracy among at least 15 recent predictions rated 55% or higher. A recent accuracy drop automatically pauses production regression use and falls back to the no-vig market probability, then the weighted heuristic. Probabilities are shrunk toward 50% to reduce overconfidence.
 
+Complete-slate winner requests use the primary regression. Winner recommendations can enter `best bets` only when an independently trained no-total selective regression is also approved, rates the same side at 55% or higher, and agrees with a 55%+ primary prediction. This keeps forced projections visible without treating them as equally bettable.
+
 ## Model Inputs
 
 The August winner heuristic uses this 100% core weighting:
@@ -74,7 +76,7 @@ The scheduler is timezone-explicit, so the Oracle VM's operating-system timezone
 
 ## Model Diagnostics
 
-Run `npm run validate:model -- data/app.db` to evaluate the exact regression implementation with rolling daily holdouts, recent-slate approval metrics, and the 55%+ qualified tier separately from forced low-confidence picks. Run `npm run analyze:history -- data/app.db` for recent performance, market agreement, side bias, and feature-variance diagnostics. Run `npm run calibrate:rotowire -- data/app.db` to refit/check the one-sided-line hold correction against stored two-sided markets. These are forward-looking checks; in-sample accuracy is not used as evidence for promotion.
+Run `npm run validate:model -- data/app.db` to evaluate the primary and selective regressions with rolling daily holdouts, recent-slate approval metrics, dual-model agreement, and the 55%+ qualified tier separately from forced low-confidence picks. Run `npm run analyze:history -- data/app.db` for recent performance, market agreement, side bias, and feature-variance diagnostics. Run `npm run calibrate:rotowire -- data/app.db` to refit/check the one-sided-line hold correction against stored two-sided markets. These are forward-looking checks; in-sample accuracy is not used as evidence for promotion.
 
 ## Persistent Data
 

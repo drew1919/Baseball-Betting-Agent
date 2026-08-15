@@ -12,6 +12,8 @@ const FEATURE_NAMES = [
   "totalValue",
   "coverageDiff"
 ] as const;
+export type RegressionFeatureName = typeof FEATURE_NAMES[number];
+export const REGRESSION_FEATURE_NAMES: readonly RegressionFeatureName[] = FEATURE_NAMES;
 
 export const REGRESSION_FEATURE_VERSION = 2;
 export const MIN_REGRESSION_SAMPLE = 60;
@@ -57,16 +59,19 @@ export function buildRegressionTrainingRows(rows: Array<WinnerFeatureSnapshot & 
   return rows.map((row) => ({ ...row, ...regressionFeatures(row) }));
 }
 
-export function trainLogisticRegression(rows: RegressionTrainingRow[]): LogisticRegressionModel | null {
+export function trainLogisticRegression(
+  rows: RegressionTrainingRow[],
+  featureNames: readonly RegressionFeatureName[] = FEATURE_NAMES
+): LogisticRegressionModel | null {
   if (rows.length < MIN_REGRESSION_SAMPLE) return null;
 
-  const matrix = rows.map((row) => FEATURE_NAMES.map((name) => row[name]));
+  const matrix = rows.map((row) => featureNames.map((name) => row[name]));
   const targets = rows.map((row) => row.homeWin);
 
-  const means = FEATURE_NAMES.map((_, featureIndex) =>
+  const means = featureNames.map((_, featureIndex) =>
     matrix.reduce((sum, row) => sum + row[featureIndex], 0) / matrix.length
   );
-  const stds = FEATURE_NAMES.map((_, featureIndex) => {
+  const stds = featureNames.map((_, featureIndex) => {
     const variance = matrix.reduce((sum, row) => {
       const diff = row[featureIndex] - means[featureIndex];
       return sum + diff * diff;
@@ -78,14 +83,14 @@ export function trainLogisticRegression(rows: RegressionTrainingRow[]): Logistic
     row.map((value, index) => (value - means[index]) / stds[index])
   );
 
-  const weights = new Array(FEATURE_NAMES.length).fill(0);
+  const weights = new Array(featureNames.length).fill(0);
   let intercept = 0;
   const learningRate = 0.045;
   const regularization = 0.02;
   const iterations = 1800;
 
   for (let iteration = 0; iteration < iterations; iteration += 1) {
-    const weightGradients = new Array(FEATURE_NAMES.length).fill(0);
+    const weightGradients = new Array(featureNames.length).fill(0);
     let interceptGradient = 0;
 
     for (let rowIndex = 0; rowIndex < normalized.length; rowIndex += 1) {
@@ -112,7 +117,7 @@ export function trainLogisticRegression(rows: RegressionTrainingRow[]): Logistic
 
   return {
     featureVersion: REGRESSION_FEATURE_VERSION,
-    featureNames: [...FEATURE_NAMES],
+    featureNames: [...featureNames],
     means,
     stds,
     weights,
