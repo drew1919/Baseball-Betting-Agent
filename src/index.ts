@@ -9,7 +9,7 @@ import { getAugmentedStats, getExpectedStatsCsvPaths, getExpectedStatsCsvWritePa
 import { upsertWinnerFeatureSnapshots, upsertWinnerResults, readWinnerFeatureSnapshots, readWinnerResults, readProductionRegressionModel, readCandidateRegressionModel, writeCandidateRegressionModel, writeProductionRegressionModel, readRegressionReport, writeRegressionReport, getStorageStatus } from "./feature-store.js";
 import { buildWinnerGameId, fetchWinnerResults, fetchWinnerScoreboard, type WinnerScoreboard } from "./results-fetcher.js";
 import { buildRegressionTrainingRows, MIN_REGRESSION_SAMPLE, predictHomeWinProbability, REGRESSION_FEATURE_VERSION, trainLogisticRegression } from "./regression-trainer.js";
-import { evaluateHeuristicBaseline, evaluateRegressionModel, evaluateWalkForwardRegression } from "./model-evaluator.js";
+import { evaluateHeuristicBaseline, evaluateRegressionModel, evaluateWalkForwardRegression, QUALIFIED_CONFIDENCE_THRESHOLD, RECENT_VALIDATION_DATES } from "./model-evaluator.js";
 import type { RegressionReport, WinnerFeatureSnapshot } from "./regression-types.js";
 
 dotenv.config();
@@ -41,6 +41,11 @@ const MODEL_DATA_MAX_AGE_MS = 1000 * 60 * 60 * 8;
 const SOURCE_STALE_MS = 1000 * 60 * 60 * 26;
 const WINNER_SCOREBOARD_CACHE_MS = 1000 * 60 * 2;
 const ROTOWIRE_MARKET_SHRINK = 0.915;
+const MODEL_APPROVAL_MIN_LIFT = 0.02;
+const RECENT_APPROVAL_MIN_GAMES = 30;
+const RECENT_APPROVAL_MIN_ACCURACY = 0.50;
+const QUALIFIED_APPROVAL_MIN_GAMES = 15;
+const QUALIFIED_APPROVAL_MIN_ACCURACY = 0.60;
 const ODDS_API_BASE = "https://api.the-odds-api.com/v4/sports/baseball_mlb/odds";
 const ODDS_BOOKMAKER = process.env.ODDS_BOOKMAKER || "fanduel";
 const MORNING_REFRESH_TIME_ZONE = process.env.MORNING_REFRESH_TIME_ZONE || "America/New_York";
@@ -2457,8 +2462,10 @@ function winnerPrediction(game: MatchedGameContext, breakdown: Awaited<ReturnTyp
     };
   }
   const production = readProductionRegressionModel();
+  const regressionReport = readRegressionReport();
   const usableModel = production?.featureVersion === REGRESSION_FEATURE_VERSION
     && production.trainingSampleSize >= MIN_REGRESSION_SAMPLE
+    && regressionReport?.productionApproved !== false
     ? production
     : null;
   const snapshot: WinnerFeatureSnapshot = {
@@ -2614,6 +2621,10 @@ async function refreshRegressionArtifacts() {
     ? trainingRows.filter((row) => row.snapshotDate >= walkForward.firstTestDate!)
     : [];
   const heuristicMetrics = evaluateHeuristicBaseline(walkForwardRows);
+  const recentWalkForwardRows = walkForward.recentStartDate
+    ? trainingRows.filter((row) => row.snapshotDate >= walkForward.recentStartDate!)
+    : [];
+  const recentHeuristicMetrics = evaluateHeuristicBaseline(recentWalkForwardRows);
   const productionMetrics = production && walkForwardRows.length
     ? evaluateRegressionModel(production, walkForwardRows)
     : null;
@@ -2634,6 +2645,7 @@ async function refreshRegressionArtifacts() {
     averageHomeBullpenRating: averageOrNull(bullpenRows.map((row) => row.homeBullpen))
   };
   let promotedCandidate = false;
+  let productionApproved = false;
   const notes: string[] = [];
 
   if (candidate) {
@@ -2642,14 +2654,31 @@ async function refreshRegressionArtifacts() {
       ? false
       : candidateMetrics.logLoss < heuristicMetrics.logLoss
         && candidateMetrics.brierScore <= heuristicMetrics.brierScore
-        && candidateMetrics.accuracy >= heuristicMetrics.accuracy + 0.02;
+        && candidateMetrics.accuracy >= heuristicMetrics.accuracy + MODEL_APPROVAL_MIN_LIFT;
+    const passesRecentForm = !walkForward.recentMetrics || !recentHeuristicMetrics
+      ? false
+      : walkForward.recentMetrics.sampleSize >= RECENT_APPROVAL_MIN_GAMES
+        && walkForward.recentMetrics.accuracy >= RECENT_APPROVAL_MIN_ACCURACY
+        && walkForward.recentMetrics.accuracy >= recentHeuristicMetrics.accuracy + MODEL_APPROVAL_MIN_LIFT
+        && walkForward.recentMetrics.logLoss < recentHeuristicMetrics.logLoss
+        && walkForward.recentMetrics.brierScore <= recentHeuristicMetrics.brierScore;
+    const passesQualifiedTier = Boolean(walkForward.recentQualifiedMetrics
+      && walkForward.recentQualifiedMetrics.sampleSize >= QUALIFIED_APPROVAL_MIN_GAMES
+      && walkForward.recentQualifiedMetrics.accuracy >= QUALIFIED_APPROVAL_MIN_ACCURACY);
+    productionApproved = Boolean(
+      beatsHeuristic
+      && passesRecentForm
+      && passesQualifiedTier
+      && candidateMetrics
+      && candidateMetrics.sampleSize >= 45
+    );
 
-    if (beatsHeuristic && candidateMetrics && candidateMetrics.sampleSize >= 45) {
+    if (productionApproved) {
       writeProductionRegressionModel(candidate);
       promotedCandidate = true;
-      notes.push("Candidate regression promoted after passing rolling forward validation.");
+      notes.push("Candidate regression promoted after passing overall, recent, and qualified-tier rolling-forward validation.");
     } else {
-      notes.push("Candidate regression stored but not promoted by rolling forward validation.");
+      notes.push("Candidate regression stored but production use is paused until overall, recent, and qualified-tier gates all pass.");
     }
     } else {
       notes.push(`Regression needs at least ${MIN_REGRESSION_SAMPLE} completed games with matching pregame feature snapshots before training can begin.`);
@@ -2671,6 +2700,12 @@ async function refreshRegressionArtifacts() {
     candidateMetrics,
     walkForwardMetrics: walkForward.metrics,
     walkForwardStartDate: walkForward.firstTestDate,
+    recentWalkForwardMetrics: walkForward.recentMetrics,
+    recentQualifiedMetrics: walkForward.recentQualifiedMetrics,
+    recentForcedMetrics: walkForward.recentForcedMetrics,
+    recentHeuristicMetrics,
+    recentValidationStartDate: walkForward.recentStartDate,
+    productionApproved,
     promotedCandidate,
     notes
   };
@@ -3239,6 +3274,23 @@ app.get("/api/health", (_req, res) => {
       lastReportAt: regressionReport?.generatedAt || null,
       trainingRows: regressionReport?.trainingRows || 0,
       promotedCandidate: regressionReport?.promotedCandidate || false,
+      productionApproved: regressionReport?.productionApproved ?? null,
+      recentWalkForwardMetrics: regressionReport?.recentWalkForwardMetrics || null,
+      recentQualifiedMetrics: regressionReport?.recentQualifiedMetrics || null,
+      recentForcedMetrics: regressionReport?.recentForcedMetrics || null,
+      recentHeuristicMetrics: regressionReport?.recentHeuristicMetrics || null,
+      recentValidationStartDate: regressionReport?.recentValidationStartDate || null,
+      approvalGate: {
+        recentSlates: RECENT_VALIDATION_DATES,
+        minimumRecentGames: RECENT_APPROVAL_MIN_GAMES,
+        minimumRecentAccuracy: RECENT_APPROVAL_MIN_ACCURACY,
+        minimumHeuristicLift: MODEL_APPROVAL_MIN_LIFT,
+        qualifiedConfidenceThreshold: QUALIFIED_CONFIDENCE_THRESHOLD,
+        minimumQualifiedGames: QUALIFIED_APPROVAL_MIN_GAMES,
+        minimumQualifiedAccuracy: QUALIFIED_APPROVAL_MIN_ACCURACY,
+        requiresBetterLogLoss: true,
+        requiresNoWorseBrierScore: true
+      },
       parkFactorCoverage: regressionReport?.parkFactorCoverage || null,
       bullpenCoverage: regressionReport?.bullpenCoverage || null
     },

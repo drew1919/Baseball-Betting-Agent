@@ -97,6 +97,12 @@ export type RegressionReport = {
   candidateMetrics: ModelMetrics | null;
   walkForwardMetrics?: ModelMetrics | null;
   walkForwardStartDate?: string | null;
+  recentWalkForwardMetrics?: ModelMetrics | null;
+  recentQualifiedMetrics?: ModelMetrics | null;
+  recentForcedMetrics?: ModelMetrics | null;
+  recentHeuristicMetrics?: ModelMetrics | null;
+  recentValidationStartDate?: string | null;
+  productionApproved?: boolean;
   promotedCandidate: boolean;
   notes: string[];
 };
