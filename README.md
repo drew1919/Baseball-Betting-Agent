@@ -88,7 +88,7 @@ Run `npm run validate:model -- data/app.db` to evaluate the primary and selectiv
 
 ## Persistent Data
 
-The ignored `data/` directory contains the SQLite database and regenerated source files. `data/app.db` is the source of truth for winner and first-inning feature snapshots, official results, and model artifacts. Each new snapshot stores the raw statistical lean separately from the final prediction, confidence, engine, and market weight so later evaluation does not conflate those concepts. Keep this directory on persistent Oracle storage and back it up before server migrations.
+The ignored `data/` directory contains the SQLite database and regenerated source files. `data/app.db` is the source of truth for winner and first-inning feature snapshots, official results, and model artifacts. Each new snapshot stores the raw statistical lean separately from the final prediction, confidence, engine, selective-model confidence, immutable qualified-wager flag, and market weight so later evaluation does not conflate forced full-slate leans with actual wager-tier recommendations. Keep this directory on persistent Oracle storage and back it up before server migrations.
 
 ## API Endpoints
 

@@ -2684,6 +2684,8 @@ async function buildWinnerFeatureSnapshot(game: MatchedGameContext, snapshotDate
     predictionPick: prediction.pick,
     predictionConfidence: prediction.confidence,
     predictionMethod: prediction.method,
+    wagerQualified: prediction.validatedStrong,
+    selectiveConfidence: prediction.selectiveConfidence,
     marketWeight: prediction.method === "85% statistical model + 15% market sanity check"
       ? FALLBACK_MARKET_WEIGHT
       : null,
@@ -3743,6 +3745,8 @@ app.get("/api/recommendations/history", async (req, res) => {
         legacyStrengthScore: legacySnapshot ? snapshot.heuristicConfidence : null,
         confidenceKind: legacySnapshot ? "legacy-strength-score" : "pick-probability",
         predictionMethod: snapshot.predictionMethod || "legacy snapshot",
+        wagerQualified: snapshot.wagerQualified === true,
+        selectiveConfidence: snapshot.selectiveConfidence ?? null,
         marketWeight: snapshot.marketWeight ?? null,
         marketLean: snapshot.marketLean,
         dataQuality: snapshot.dataQuality ?? null,
@@ -3782,6 +3786,13 @@ app.get("/api/recommendations/history", async (req, res) => {
   };
   const prospectiveGraded = graded.filter((game) => game.analysisVersion !== "legacy");
   const legacyGraded = graded.filter((game) => game.analysisVersion === "legacy");
+  const qualifiedProspectiveGames = games.filter((game) => game.analysisVersion !== "legacy" && game.wagerQualified);
+  const qualifiedProspectiveGraded = qualifiedProspectiveGames.filter((game) => game.status === "graded");
+  const qualifiedProspectiveSummary = {
+    ...cohortSummary(qualifiedProspectiveGraded),
+    pendingCount: qualifiedProspectiveGames.filter((game) => game.status === "pending").length,
+    liveCount: qualifiedProspectiveGames.filter((game) => game.status === "live").length
+  };
 
   res.json({
     ok: true,
@@ -3799,6 +3810,7 @@ app.get("/api/recommendations/history", async (req, res) => {
       marketCorrectCount,
       marketAccuracy: marketGraded.length ? marketCorrectCount / marketGraded.length : null,
       prospective: cohortSummary(prospectiveGraded),
+      qualifiedProspective: qualifiedProspectiveSummary,
       legacy: cohortSummary(legacyGraded),
       byAnalysisVersion
     },
