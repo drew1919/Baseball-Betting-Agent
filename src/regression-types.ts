@@ -82,6 +82,21 @@ export type ModelMetrics = {
   averageProbability: number;
 };
 
+export type RegressionFeatureDiagnostic = {
+  name: string;
+  standardDeviation: number;
+  maxAbsoluteCorrelation: number | null;
+  redundantWith: string | null;
+  selected: boolean;
+};
+
+export type ComponentContributionDiagnostic = {
+  component: string;
+  configuredWeight: number;
+  standardDeviation: number;
+  shareOfObservedVariation: number;
+};
+
 export type RegressionReport = {
   generatedAt: string;
   trainingRows: number;
@@ -93,7 +108,10 @@ export type RegressionReport = {
     excludedFeatureRows: number;
     joinedEligibleRows: number;
     minimumDataQuality: number;
+    minimumTrainingRows?: number;
   };
+  regressionFeatureDiagnostics?: RegressionFeatureDiagnostic[];
+  componentContributionDiagnostics?: ComponentContributionDiagnostic[];
   parkFactorCoverage: {
     populatedRows: number;
     coverageRate: number;

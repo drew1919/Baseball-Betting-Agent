@@ -1,5 +1,5 @@
 import type { LogisticRegressionModel, ModelMetrics, RegressionTrainingRow } from "./regression-types.js";
-import { fallbackHomeWinProbability, predictHomeWinProbability, trainLogisticRegression, type RegressionFeatureName } from "./regression-trainer.js";
+import { fallbackHomeWinProbability, MIN_REGRESSION_SAMPLE, predictHomeWinProbability, trainLogisticRegression, type RegressionFeatureName } from "./regression-trainer.js";
 
 export const RECENT_VALIDATION_DATES = 5;
 export const QUALIFIED_CONFIDENCE_THRESHOLD = 0.55;
@@ -83,7 +83,7 @@ export function evaluateHeuristicBaseline(rows: RegressionTrainingRow[]): ModelM
 
 export function evaluateWalkForwardRegression(
   rows: RegressionTrainingRow[],
-  minimumTrainingRows = 60,
+  minimumTrainingRows = MIN_REGRESSION_SAMPLE,
   featureNames?: readonly RegressionFeatureName[],
   incompleteRecentDate?: string
 ): {

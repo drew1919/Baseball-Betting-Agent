@@ -8,7 +8,7 @@ import { STATS, type BatterStat, type PitcherStat } from "./stats.js";
 import { getAugmentedStats, getExpectedStatsCsvPaths, getExpectedStatsCsvWritePaths } from "./augmented-stats.js";
 import { upsertWinnerFeatureSnapshots, upsertWinnerResults, readWinnerFeatureSnapshots, readWinnerResults, readProductionRegressionModel, readCandidateRegressionModel, writeCandidateRegressionModel, writeProductionRegressionModel, readProductionSelectiveRegressionModel, writeCandidateSelectiveRegressionModel, writeProductionSelectiveRegressionModel, readRegressionReport, writeRegressionReport, getStorageStatus, upsertFirstInningFeatureSnapshots, upsertFirstInningResults, readFirstInningFeatureSnapshots, readFirstInningResults } from "./feature-store.js";
 import { buildWinnerGameId, fetchWinnerScoreboard, type WinnerScoreboard } from "./results-fetcher.js";
-import { buildRegressionTrainingRows, FALLBACK_MARKET_WEIGHT, fallbackHomeWinProbability, MIN_REGRESSION_DATA_QUALITY, MIN_REGRESSION_SAMPLE, predictHomeWinProbability, REGRESSION_FEATURE_NAMES, REGRESSION_FEATURE_VERSION, regressionTrainingEligible, trainLogisticRegression } from "./regression-trainer.js";
+import { buildRegressionTrainingRows, FALLBACK_MARKET_WEIGHT, fallbackHomeWinProbability, MIN_REGRESSION_DATA_QUALITY, MIN_REGRESSION_SAMPLE, predictHomeWinProbability, REGRESSION_FEATURE_NAMES, REGRESSION_FEATURE_VERSION, regressionFeatureDiagnostics, regressionTrainingEligible, trainLogisticRegression } from "./regression-trainer.js";
 import { evaluateHeuristicBaseline, evaluateRegressionModel, evaluateWalkForwardRegression, QUALIFIED_CONFIDENCE_THRESHOLD, RECENT_VALIDATION_DATES } from "./model-evaluator.js";
 import type { RegressionReport, WinnerFeatureSnapshot } from "./regression-types.js";
 import { clampPlayerRating, lineupAdjustedTeamRating, sampleAdjustedPlayerRating } from "./rating-utils.js";
@@ -23,7 +23,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(process.cwd(), "public")));
 
 const PORT = process.env.PORT || 3000;
-const ANALYSIS_VERSION = "models-v8.5-first-inning-accountability";
+const ANALYSIS_VERSION = "models-v8.6-regression-stability";
 const CURRENT_SEASON = new Date().getFullYear();
 const PREVIOUS_SEASON = CURRENT_SEASON - 1;
 
@@ -2792,6 +2792,45 @@ function averageOrNull(values: number[]) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function observedStandardDeviation(values: number[]) {
+  const mean = averageOrNull(values);
+  if (mean === null) return 0;
+  return Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length);
+}
+
+function componentContributionDiagnostics(rows: WinnerFeatureSnapshot[]) {
+  const contributions = [
+    { component: "offense", configuredWeight: 0.37, values: [] as number[] },
+    { component: "pitching", configuredWeight: 0.30, values: [] as number[] },
+    { component: "trend", configuredWeight: 0.16, values: [] as number[] },
+    { component: "winProbability", configuredWeight: 0.10, values: [] as number[] },
+    { component: "defense", configuredWeight: 0.05, values: [] as number[] },
+    { component: "park", configuredWeight: 0.02, values: [] as number[] }
+  ];
+
+  rows.forEach((row) => {
+    const weights = winnerWeights(new Date(`${row.snapshotDate}T12:00:00`));
+    contributions[0].values.push((row.homeOffense - row.awayOffense) * weights.offense);
+    contributions[1].values.push(
+      (row.homePitching - row.awayPitching) * weights.starter
+      + (row.homeBullpen - row.awayBullpen) * weights.bullpen
+    );
+    contributions[2].values.push((row.homeTrend - row.awayTrend) * weights.trend);
+    contributions[3].values.push((row.homeWinProb - row.awayWinProb) * weights.winProb);
+    contributions[4].values.push((row.homeDefense - row.awayDefense) * weights.defense);
+    contributions[5].values.push((row.homePark - row.awayPark) * weights.park);
+  });
+
+  const deviations = contributions.map(({ values }) => observedStandardDeviation(values));
+  const totalDeviation = deviations.reduce((sum, value) => sum + value, 0);
+  return contributions.map(({ component, configuredWeight }, index) => ({
+    component,
+    configuredWeight,
+    standardDeviation: deviations[index],
+    shareOfObservedVariation: totalDeviation ? deviations[index] / totalDeviation : 0
+  }));
+}
+
 async function refreshRegressionArtifacts() {
   const featureRows = readWinnerFeatureSnapshots();
   const eligibleFeatureRows = featureRows.filter(regressionTrainingEligible);
@@ -2812,6 +2851,8 @@ async function refreshRegressionArtifacts() {
     .filter((row): row is NonNullable<typeof row> => row !== null);
 
   const trainingRows = buildRegressionTrainingRows(joined);
+  const featureDiagnostics = regressionFeatureDiagnostics(trainingRows);
+  const contributionDiagnostics = componentContributionDiagnostics(eligibleFeatureRows);
   const candidate = trainLogisticRegression(trainingRows);
   const selectiveCandidate = trainLogisticRegression(trainingRows, SELECTIVE_FEATURE_NAMES);
   const storedProduction = readProductionRegressionModel();
@@ -2864,6 +2905,24 @@ async function refreshRegressionArtifacts() {
   const excludedFeatureRows = featureRows.length - eligibleFeatureRows.length;
   if (excludedFeatureRows) {
     notes.push(`${excludedFeatureRows} legacy or incomplete feature snapshots were excluded from regression training.`);
+  }
+  if (trainingRows.length >= MIN_REGRESSION_SAMPLE) {
+    const removedFeatures = featureDiagnostics.filter((feature) => !feature.selected);
+    if (removedFeatures.length) {
+      notes.push(`Regression stability guard removed ${removedFeatures.map((feature) => feature.name).join(", ")} because they were constant or at least 92% correlated with a higher-priority feature.`);
+    }
+  }
+  if (eligibleFeatureRows.length >= 30) {
+    const contributionByName = new Map(contributionDiagnostics.map((row) => [row.component, row]));
+    const offenseVariation = contributionByName.get("offense")?.shareOfObservedVariation || 0;
+    const trendVariation = contributionByName.get("trend")?.shareOfObservedVariation || 0;
+    if (trendVariation > offenseVariation) {
+      notes.push("Observed trend contribution is varying more than offense despite its lower configured weight; hold weight changes until graded clean outcomes can validate a correction.");
+    }
+    const frozen = contributionDiagnostics
+      .filter((row) => row.standardDeviation <= 1e-9)
+      .map((row) => row.component);
+    if (frozen.length) notes.push(`No cross-game variation detected for: ${frozen.join(", ")}. These components cannot currently affect picks.`);
   }
 
   if (candidate) {
@@ -2935,8 +2994,11 @@ async function refreshRegressionArtifacts() {
       eligibleFeatureRows: eligibleFeatureRows.length,
       excludedFeatureRows: featureRows.length - eligibleFeatureRows.length,
       joinedEligibleRows: trainingRows.length,
-      minimumDataQuality: MIN_REGRESSION_DATA_QUALITY
+      minimumDataQuality: MIN_REGRESSION_DATA_QUALITY,
+      minimumTrainingRows: MIN_REGRESSION_SAMPLE
     },
+    regressionFeatureDiagnostics: featureDiagnostics,
+    componentContributionDiagnostics: contributionDiagnostics,
     parkFactorCoverage: parkCoverage,
     bullpenCoverage,
     heuristicMetrics,
@@ -3548,6 +3610,8 @@ app.get("/api/health", (_req, res) => {
       lastReportAt: regressionReport?.generatedAt || null,
       trainingRows: regressionReport?.trainingRows || 0,
       trainingEligibility: regressionReport?.trainingEligibility || null,
+      featureDiagnostics: regressionReport?.regressionFeatureDiagnostics || [],
+      componentContributionDiagnostics: regressionReport?.componentContributionDiagnostics || [],
       promotedCandidate: regressionReport?.promotedCandidate || false,
       productionApproved: regressionReport?.productionApproved ?? null,
       selectiveProductionApproved: regressionReport?.selectiveProductionApproved ?? null,

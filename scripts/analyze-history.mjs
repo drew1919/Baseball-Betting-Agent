@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { buildRegressionTrainingRows, predictHomeWinProbability, regressionTrainingEligible, trainLogisticRegression } from "../dist/regression-trainer.js";
+import { buildRegressionTrainingRows, MIN_REGRESSION_SAMPLE, predictHomeWinProbability, regressionTrainingEligible, trainLogisticRegression } from "../dist/regression-trainer.js";
 
 const databasePath = process.argv[2] || "data/app.db";
 const db = new DatabaseSync(databasePath, { readOnly: true });
@@ -62,6 +62,12 @@ function pointBiserial(values, outcomes) {
 }
 
 function trainingInput(row) {
+  let dataQualityNotes = [];
+  try {
+    dataQualityNotes = JSON.parse(row.data_quality_notes || "[]");
+  } catch {
+    dataQualityNotes = [];
+  }
   return {
     snapshotDate: row.snapshot_date,
     analysisVersion: row.analysis_version,
@@ -90,6 +96,7 @@ function trainingInput(row) {
     lineupCoverageAway: row.lineup_coverage_away,
     lineupCoverageHome: row.lineup_coverage_home,
     dataQuality: row.data_quality,
+    dataQualityNotes,
     heuristicPick: row.heuristic_pick,
     heuristicEdge: row.heuristic_edge,
     heuristicConfidence: row.heuristic_confidence,
@@ -102,7 +109,7 @@ function trainingInput(row) {
   };
 }
 
-function walkForwardBacktest(allRows, minimumTrainingRows = 60) {
+function walkForwardBacktest(allRows, minimumTrainingRows = MIN_REGRESSION_SAMPLE) {
   const predictions = [];
   const trainingRows = buildRegressionTrainingRows(allRows.map(trainingInput).filter(regressionTrainingEligible));
   const sourceByGameId = new Map(allRows.map((row) => [row.game_id, row]));

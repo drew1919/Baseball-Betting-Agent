@@ -1,4 +1,4 @@
-import type { LogisticRegressionModel, RegressionTrainingRow, WinnerFeatureSnapshot, WinnerResultRow } from "./regression-types.js";
+import type { LogisticRegressionModel, RegressionFeatureDiagnostic, RegressionTrainingRow, WinnerFeatureSnapshot, WinnerResultRow } from "./regression-types.js";
 
 const FEATURE_NAMES = [
   "offenseDiff",
@@ -15,11 +15,12 @@ const FEATURE_NAMES = [
 export type RegressionFeatureName = typeof FEATURE_NAMES[number];
 export const REGRESSION_FEATURE_NAMES: readonly RegressionFeatureName[] = FEATURE_NAMES;
 
-// Version 3 requires the modern clean training cohort; v2 artifacts used legacy rows.
-export const REGRESSION_FEATURE_VERSION = 3;
-export const MIN_REGRESSION_SAMPLE = 60;
+// Version 4 adds sample-size and feature-stability guards to the clean cohort.
+export const REGRESSION_FEATURE_VERSION = 4;
+export const MIN_REGRESSION_SAMPLE = 200;
 export const MIN_REGRESSION_DATA_QUALITY = 0.75;
 export const FALLBACK_MARKET_WEIGHT = 0.15;
+export const MAX_REGRESSION_FEATURE_CORRELATION = 0.92;
 const PROBABILITY_CALIBRATION_FACTOR = 0.5;
 
 export function regressionTrainingEligible(row: WinnerFeatureSnapshot) {
@@ -92,6 +93,70 @@ function sigmoid(value: number) {
   return z / (1 + z);
 }
 
+function standardDeviation(values: number[]) {
+  if (!values.length) return 0;
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+  return Math.sqrt(variance);
+}
+
+function correlation(left: number[], right: number[]) {
+  const leftDeviation = standardDeviation(left);
+  const rightDeviation = standardDeviation(right);
+  if (!leftDeviation || !rightDeviation || left.length !== right.length || !left.length) return 0;
+  const leftMean = left.reduce((sum, value) => sum + value, 0) / left.length;
+  const rightMean = right.reduce((sum, value) => sum + value, 0) / right.length;
+  const covariance = left.reduce((sum, value, index) =>
+    sum + (value - leftMean) * (right[index] - rightMean), 0) / left.length;
+  return covariance / (leftDeviation * rightDeviation);
+}
+
+export function regressionFeatureDiagnostics(
+  rows: RegressionTrainingRow[],
+  requestedFeatureNames: readonly RegressionFeatureName[] = FEATURE_NAMES
+): RegressionFeatureDiagnostic[] {
+  const values = new Map(requestedFeatureNames.map((name) => [name, rows.map((row) => row[name])]));
+  const selected: RegressionFeatureName[] = [];
+
+  return requestedFeatureNames.map((name) => {
+    const featureValues = values.get(name) || [];
+    const featureDeviation = standardDeviation(featureValues);
+    let maxAbsoluteCorrelation: number | null = null;
+    let redundantWith: string | null = null;
+
+    selected.forEach((selectedName) => {
+      const candidateCorrelation = Math.abs(correlation(featureValues, values.get(selectedName) || []));
+      if (maxAbsoluteCorrelation === null || candidateCorrelation > maxAbsoluteCorrelation) {
+        maxAbsoluteCorrelation = candidateCorrelation;
+        redundantWith = selectedName;
+      }
+    });
+
+    const isConstant = featureDeviation <= 1e-9;
+    const isRedundant = maxAbsoluteCorrelation !== null
+      && maxAbsoluteCorrelation >= MAX_REGRESSION_FEATURE_CORRELATION;
+    const isSelected = !isConstant && !isRedundant;
+    if (isSelected) selected.push(name);
+
+    return {
+      name,
+      standardDeviation: featureDeviation,
+      maxAbsoluteCorrelation,
+      redundantWith: isRedundant ? redundantWith : null,
+      selected: isSelected
+    };
+  });
+}
+
+export function selectRegressionFeatureNames(
+  rows: RegressionTrainingRow[],
+  requestedFeatureNames: readonly RegressionFeatureName[] = FEATURE_NAMES
+) {
+  return regressionFeatureDiagnostics(rows, requestedFeatureNames)
+    .filter((diagnostic) => diagnostic.selected)
+    .map((diagnostic) => diagnostic.name as RegressionFeatureName);
+}
+
 export function fallbackHomeWinProbability(
   row: WinnerFeatureSnapshot,
   marketWeight = FALLBACK_MARKET_WEIGHT
@@ -116,6 +181,9 @@ export function trainLogisticRegression(
   featureNames: readonly RegressionFeatureName[] = FEATURE_NAMES
 ): LogisticRegressionModel | null {
   if (rows.length < MIN_REGRESSION_SAMPLE) return null;
+
+  featureNames = selectRegressionFeatureNames(rows, featureNames);
+  if (!featureNames.length) return null;
 
   const matrix = rows.map((row) => featureNames.map((name) => row[name]));
   const targets = rows.map((row) => row.homeWin);
