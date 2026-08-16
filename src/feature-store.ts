@@ -63,6 +63,10 @@ function initDatabase() {
       heuristic_pick TEXT NOT NULL,
       heuristic_edge REAL NOT NULL,
       heuristic_confidence REAL NOT NULL,
+      prediction_pick TEXT,
+      prediction_confidence REAL,
+      prediction_method TEXT,
+      market_weight REAL,
       market_lean TEXT,
       analysis_version TEXT NOT NULL DEFAULT 'legacy'
     );
@@ -113,6 +117,18 @@ function ensureWinnerFeatureSnapshotColumns(database: DatabaseSync) {
   }
   if (!names.has("analysis_version")) {
     database.exec("ALTER TABLE winner_feature_snapshots ADD COLUMN analysis_version TEXT NOT NULL DEFAULT 'legacy'");
+  }
+  if (!names.has("prediction_pick")) {
+    database.exec("ALTER TABLE winner_feature_snapshots ADD COLUMN prediction_pick TEXT");
+  }
+  if (!names.has("prediction_confidence")) {
+    database.exec("ALTER TABLE winner_feature_snapshots ADD COLUMN prediction_confidence REAL");
+  }
+  if (!names.has("prediction_method")) {
+    database.exec("ALTER TABLE winner_feature_snapshots ADD COLUMN prediction_method TEXT");
+  }
+  if (!names.has("market_weight")) {
+    database.exec("ALTER TABLE winner_feature_snapshots ADD COLUMN market_weight REAL");
   }
 }
 
@@ -223,6 +239,16 @@ function mapFeatureRow(row: Record<string, unknown>): WinnerFeatureSnapshot {
     heuristicPick: String(row.heuristic_pick),
     heuristicEdge: Number(row.heuristic_edge),
     heuristicConfidence: Number(row.heuristic_confidence),
+    predictionPick: row.prediction_pick === null || row.prediction_pick === undefined
+      ? String(row.heuristic_pick)
+      : String(row.prediction_pick),
+    predictionConfidence: row.prediction_confidence === null || row.prediction_confidence === undefined
+      ? Number(row.heuristic_confidence)
+      : Number(row.prediction_confidence),
+    predictionMethod: row.prediction_method === null || row.prediction_method === undefined
+      ? "legacy snapshot"
+      : String(row.prediction_method),
+    marketWeight: row.market_weight === null || row.market_weight === undefined ? null : Number(row.market_weight),
     marketLean: row.market_lean === null ? null : String(row.market_lean),
     analysisVersion: row.analysis_version === null || row.analysis_version === undefined ? "legacy" : String(row.analysis_version)
   };
@@ -261,8 +287,9 @@ export function upsertWinnerFeatureSnapshots(rows: WinnerFeatureSnapshot[]) {
       game_id, snapshot_date, away, home, away_offense, home_offense, away_pitching, home_pitching, away_bullpen, home_bullpen,
       away_trend, home_trend, away_win_prob, home_win_prob, away_defense, home_defense, park_index, venue_name, away_park, home_park,
       away_moneyline, home_moneyline, total, lineup_coverage_away, lineup_coverage_home,
-      heuristic_pick, heuristic_edge, heuristic_confidence, market_lean, analysis_version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      heuristic_pick, heuristic_edge, heuristic_confidence, prediction_pick, prediction_confidence, prediction_method, market_weight,
+      market_lean, analysis_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(game_id) DO NOTHING
   `);
 
@@ -275,7 +302,12 @@ export function upsertWinnerFeatureSnapshots(rows: WinnerFeatureSnapshot[]) {
         row.awayTrend, row.homeTrend, row.awayWinProb, row.homeWinProb, row.awayDefense, row.homeDefense,
         row.parkIndex, row.venueName, row.awayPark, row.homePark,
         row.awayMoneyline, row.homeMoneyline, row.total, row.lineupCoverageAway, row.lineupCoverageHome,
-        row.heuristicPick, row.heuristicEdge, row.heuristicConfidence, row.marketLean, row.analysisVersion || "legacy"
+        row.heuristicPick, row.heuristicEdge, row.heuristicConfidence,
+        row.predictionPick ?? row.heuristicPick,
+        row.predictionConfidence ?? row.heuristicConfidence,
+        row.predictionMethod ?? "legacy snapshot",
+        row.marketWeight ?? null,
+        row.marketLean, row.analysisVersion || "legacy"
       );
     }
     database.exec("COMMIT");

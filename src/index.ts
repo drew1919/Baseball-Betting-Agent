@@ -8,7 +8,7 @@ import { STATS, type BatterStat, type PitcherStat } from "./stats.js";
 import { getAugmentedStats, getExpectedStatsCsvPaths, getExpectedStatsCsvWritePaths } from "./augmented-stats.js";
 import { upsertWinnerFeatureSnapshots, upsertWinnerResults, readWinnerFeatureSnapshots, readWinnerResults, readProductionRegressionModel, readCandidateRegressionModel, writeCandidateRegressionModel, writeProductionRegressionModel, readProductionSelectiveRegressionModel, writeCandidateSelectiveRegressionModel, writeProductionSelectiveRegressionModel, readRegressionReport, writeRegressionReport, getStorageStatus } from "./feature-store.js";
 import { buildWinnerGameId, fetchWinnerResults, fetchWinnerScoreboard, type WinnerScoreboard } from "./results-fetcher.js";
-import { buildRegressionTrainingRows, MIN_REGRESSION_SAMPLE, predictHomeWinProbability, REGRESSION_FEATURE_NAMES, REGRESSION_FEATURE_VERSION, trainLogisticRegression } from "./regression-trainer.js";
+import { buildRegressionTrainingRows, FALLBACK_MARKET_WEIGHT, fallbackHomeWinProbability, MIN_REGRESSION_SAMPLE, predictHomeWinProbability, REGRESSION_FEATURE_NAMES, REGRESSION_FEATURE_VERSION, trainLogisticRegression } from "./regression-trainer.js";
 import { evaluateHeuristicBaseline, evaluateRegressionModel, evaluateWalkForwardRegression, QUALIFIED_CONFIDENCE_THRESHOLD, RECENT_VALIDATION_DATES } from "./model-evaluator.js";
 import type { RegressionReport, WinnerFeatureSnapshot } from "./regression-types.js";
 
@@ -19,7 +19,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(process.cwd(), "public")));
 
 const PORT = process.env.PORT || 3000;
-const ANALYSIS_VERSION = "models-v8.1-rotowire-market-fallback";
+const ANALYSIS_VERSION = "models-v8.2-bounded-market-blend";
 const CURRENT_SEASON = new Date().getFullYear();
 const PREVIOUS_SEASON = CURRENT_SEASON - 1;
 
@@ -2437,6 +2437,7 @@ async function buildWinnerBreakdown(game: MatchedGameContext) {
 
 function winnerPrediction(game: MatchedGameContext, breakdown: Awaited<ReturnType<typeof buildWinnerBreakdown>>) {
   const heuristicHomeProbability = 1 / (1 + Math.exp(-breakdown.edge * 0.14));
+  const statisticalHomeProbability = 0.5 + (heuristicHomeProbability - 0.5) * 0.35;
   const impliedTotal = (breakdown.awayImplied || 0) + (breakdown.homeImplied || 0);
   const marketHomeProbability = breakdown.awayImplied !== null && breakdown.homeImplied !== null && impliedTotal
     ? breakdown.homeImplied / impliedTotal
@@ -2444,17 +2445,18 @@ function winnerPrediction(game: MatchedGameContext, breakdown: Awaited<ReturnTyp
   const isStarted = breakdown.gameState === "live" || breakdown.gameState === "final";
   if (isStarted && breakdown.pregameSnapshot) {
     const snapshot = breakdown.pregameSnapshot;
-    const snapshotConfidence = Math.max(50, Math.min(100, snapshot.heuristicConfidence));
-    const snapshotHomeProbability = snapshot.heuristicPick === game.home
+    const snapshotPick = snapshot.predictionPick || snapshot.heuristicPick;
+    const snapshotConfidence = Math.max(50, Math.min(100, snapshot.predictionConfidence ?? snapshot.heuristicConfidence));
+    const snapshotHomeProbability = snapshotPick === game.home
       ? snapshotConfidence / 100
       : 1 - snapshotConfidence / 100;
     return {
-      pick: snapshot.heuristicPick,
+      pick: snapshotPick,
       homeProbability: snapshotHomeProbability,
       pickProbability: snapshotConfidence / 100,
       confidence: snapshotConfidence,
       probabilityEdge: (snapshotConfidence - 50) * 2,
-      method: "immutable pregame prediction",
+      method: `immutable pregame prediction (${snapshot.predictionMethod || "legacy snapshot"})`,
       validatedStrong: false,
       selectiveConfirmation: false,
       selectiveConfidence: null,
@@ -2504,21 +2506,20 @@ function winnerPrediction(game: MatchedGameContext, breakdown: Awaited<ReturnTyp
     lineupCoverageHome: lineupCoverageRatio(game.home, game.homeBatters),
     heuristicPick: breakdown.lean,
     heuristicEdge: Math.abs(breakdown.edge),
-    heuristicConfidence: Math.max(heuristicHomeProbability, 1 - heuristicHomeProbability) * 100,
+    heuristicConfidence: Math.max(statisticalHomeProbability, 1 - statisticalHomeProbability) * 100,
     marketLean: breakdown.marketLean
   };
 
-  let homeProbability = 0.5 + (heuristicHomeProbability - 0.5) * 0.35;
-  let method = "conservative weighted-heuristic fallback";
+  let homeProbability = fallbackHomeWinProbability(snapshot);
+  let method = marketHomeProbability === null
+    ? "conservative weighted-statistical model"
+    : "85% statistical model + 15% market sanity check";
   if (usableModel) {
     const regressionProbability = predictHomeWinProbability(usableModel, snapshot);
     if (Number.isFinite(regressionProbability)) {
       homeProbability = regressionProbability;
       method = "rolling-validated regression";
     }
-  } else if (marketHomeProbability !== null) {
-    homeProbability = marketHomeProbability;
-    method = "no-vig market baseline";
   }
 
   const pick = homeProbability >= 0.5 ? game.home : game.away;
@@ -2566,7 +2567,9 @@ async function buildWinnerFeatureSnapshot(game: MatchedGameContext, snapshotDate
   const awayCoverage = lineupCoverageRatio(game.away, game.awayBatters);
   const homeCoverage = lineupCoverageRatio(game.home, game.homeBatters);
   const heuristicEdge = Math.abs(breakdown.edge);
-  const heuristicConfidence = prediction.confidence;
+  const rawHomeProbability = 1 / (1 + Math.exp(-breakdown.edge * 0.14));
+  const statisticalHomeProbability = 0.5 + (rawHomeProbability - 0.5) * 0.35;
+  const heuristicConfidence = Math.max(statisticalHomeProbability, 1 - statisticalHomeProbability) * 100;
 
   return {
     analysisVersion: ANALYSIS_VERSION,
@@ -2595,9 +2598,15 @@ async function buildWinnerFeatureSnapshot(game: MatchedGameContext, snapshotDate
     total: breakdown.odds?.total ?? null,
     lineupCoverageAway: awayCoverage,
     lineupCoverageHome: homeCoverage,
-    heuristicPick: prediction.pick,
+    heuristicPick: breakdown.lean,
     heuristicEdge,
     heuristicConfidence,
+    predictionPick: prediction.pick,
+    predictionConfidence: prediction.confidence,
+    predictionMethod: prediction.method,
+    marketWeight: prediction.method === "85% statistical model + 15% market sanity check"
+      ? FALLBACK_MARKET_WEIGHT
+      : null,
     marketLean: breakdown.marketLean
   };
 }
@@ -2987,8 +2996,8 @@ async function analyzeWinner(game: MatchedGameContext) {
       `${game.away} defense details: **${formatNumber(breakdown.awayDefense?.score || 0)}**${breakdown.awayDefense ? ` (Fld% **${formatNumber(breakdown.awayDefense.fieldingPct, 3)}**, errors **${formatNumber(breakdown.awayDefense.errors, 0)}**)` : ""}. ${game.home} defense details: **${formatNumber(breakdown.homeDefense?.score || 0)}**${breakdown.homeDefense ? ` (Fld% **${formatNumber(breakdown.homeDefense.fieldingPct, 3)}**, errors **${formatNumber(breakdown.homeDefense.errors, 0)}**)` : ""}.`,
       `${game.away} win-prob details: batting **${formatNumber(breakdown.awayBattingImpact?.score || 0)}** / pitching **${formatNumber(breakdown.awayPitchingImpact?.score || 0)}**. ${game.home} win-prob details: batting **${formatNumber(breakdown.homeBattingImpact?.score || 0)}** / pitching **${formatNumber(breakdown.homePitchingImpact?.score || 0)}**.`,
       oddsLine,
-      `Prediction engine: **${prediction.method}**. Conservative win-probability estimate: **${formatNumber(prediction.confidence)}%** for ${lean}. The raw weighted heuristic preferred **${prediction.heuristicPick}**${breakdown.marketLean ? ` and the no-vig market side is **${breakdown.marketLean}**` : ""}.`,
-      `The core mix is offense ${formatNumber(breakdown.weights.offense * 100, 0)}%, total pitching 30% (starter ${formatNumber(breakdown.weights.starter * 100, 0)}% + bullpen ${formatNumber(breakdown.weights.bullpen * 100, 0)}%), recency/trend ${formatNumber(breakdown.weights.trend * 100, 0)}%, win-probability 10%, defense 5%, and park 2%. The bullpen share rises later in the season while total pitching remains fixed. Odds stay as context rather than part of the weighted core.`,
+      `Prediction engine: **${prediction.method}**. Conservative win-probability estimate: **${formatNumber(prediction.confidence)}%** for ${lean}. The statistical core preferred **${prediction.heuristicPick}**${breakdown.marketLean ? ` and the no-vig market side is **${breakdown.marketLean}**` : ""}.`,
+      `The statistical core is offense ${formatNumber(breakdown.weights.offense * 100, 0)}%, total pitching 30% (starter ${formatNumber(breakdown.weights.starter * 100, 0)}% + bullpen ${formatNumber(breakdown.weights.bullpen * 100, 0)}%), recency/trend ${formatNumber(breakdown.weights.trend * 100, 0)}%, win-probability 10%, defense 5%, and park 2%. When regression is paused and odds exist, that core supplies 85% of the final probability and the no-vig market supplies a bounded 15% sanity check.`,
     `${game.awayBatters.length && game.homeBatters.length ? "This read is using matched lineup bats from the selected game context." : "Lineup coverage is partial, so treat this as a softer lean."}`,
     `${tag} Recommendation: **${lean}** moneyline at **${formatNumber(prediction.confidence)}%** model confidence. ${prediction.validatedStrong ? "This clears the dual-model rolling-forward best-bet tier." : "This is a full-slate projection, not a validated high-confidence best bet."}`
   ].join("\n\n");
@@ -3322,6 +3331,7 @@ app.get("/api/health", (_req, res) => {
     oddsBookmaker: ODDS_BOOKMAKER,
     oddsFallback: "RotoWire listed moneyline (estimated no-vig)",
     rotowireMarketShrink: ROTOWIRE_MARKET_SHRINK,
+    fallbackMarketWeight: FALLBACK_MARKET_WEIGHT,
     statCounts: {
       batters: stats.batters.length,
       pitchers: stats.pitchers.length
@@ -3489,6 +3499,13 @@ app.get("/api/recommendations/history", async (req, res) => {
 
   const results = readWinnerResults();
   const resultsByGameId = new Map(results.map((result) => [result.gameId, result]));
+  const resultsByMatchup = results.reduce<Map<string, typeof results>>((groups, result) => {
+    const key = `${result.away}_${result.home}`;
+    const matchupResults = groups.get(key) || [];
+    matchupResults.push(result);
+    groups.set(key, matchupResults);
+    return groups;
+  }, new Map());
   const statusesByGameId = new Map((recentScoreboard?.statuses || []).map((status) => [status.gameId, status]));
 
   const games = readWinnerFeatureSnapshots()
@@ -3501,6 +3518,16 @@ app.get("/api/recommendations/history", async (req, res) => {
       const snapshotTime = Date.parse(`${snapshot.snapshotDate}T00:00:00Z`);
       const currentStatus = statusesByGameId.get(snapshot.gameId) || null;
       const isPast = snapshotTime < todayTime;
+      const nearbyResult = !exactResult && isPast
+        ? (resultsByMatchup.get(`${snapshot.away}_${snapshot.home}`) || [])
+          .map((result) => ({
+            result,
+            distanceDays: Math.abs(Date.parse(`${result.date}T00:00:00Z`) - snapshotTime) / 86_400_000
+          }))
+          .filter((candidate) => candidate.distanceDays <= 7)
+          .sort((a, b) => a.distanceDays - b.distanceDays || b.result.date.localeCompare(a.result.date))[0]?.result || null
+        : null;
+      const displayedResult = exactResult || nearbyResult;
       const status = exactResult
         ? "graded"
         : currentStatus?.state === "live"
@@ -3510,9 +3537,9 @@ app.get("/api/recommendations/history", async (req, res) => {
             : isPast
               ? "stale"
               : "pending";
-      const actualWinner = exactResult ? (exactResult.homeWin ? exactResult.home : exactResult.away) : null;
-      const displayedScore = exactResult
-        ? `${exactResult.awayScore}-${exactResult.homeScore}`
+      const actualWinner = displayedResult ? (displayedResult.homeWin ? displayedResult.home : displayedResult.away) : null;
+      const displayedScore = displayedResult
+        ? `${displayedResult.awayScore}-${displayedResult.homeScore}`
         : currentStatus?.state === "live"
           && currentStatus.awayScore !== null && currentStatus.awayScore !== undefined
           && currentStatus?.homeScore !== null && currentStatus?.homeScore !== undefined
@@ -3523,15 +3550,17 @@ app.get("/api/recommendations/history", async (req, res) => {
         gameId: snapshot.gameId,
         away: snapshot.away,
         home: snapshot.home,
-        predictedWinner: snapshot.heuristicPick,
+        predictedWinner: snapshot.predictionPick || snapshot.heuristicPick,
         status,
-        correct: exactResult ? snapshot.heuristicPick === actualWinner : null,
+        correct: exactResult ? (snapshot.predictionPick || snapshot.heuristicPick) === actualWinner : null,
         actualWinner,
-        resultDate: exactResult?.date || null,
+        resultDate: displayedResult?.date || null,
         finalScore: displayedScore,
         gameStateDetail: currentStatus?.detailedState || null,
         edge: snapshot.heuristicEdge,
-        confidence: snapshot.heuristicConfidence,
+        confidence: snapshot.predictionConfidence ?? snapshot.heuristicConfidence,
+        predictionMethod: snapshot.predictionMethod || "legacy snapshot",
+        marketWeight: snapshot.marketWeight ?? null,
         marketLean: snapshot.marketLean,
         analysisVersion: snapshot.analysisVersion || "legacy"
       };

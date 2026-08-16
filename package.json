@@ -8,6 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "npm run build && node dist/index.js",
     "analyze:history": "node scripts/analyze-history.mjs",
+    "analyze:market-blend": "node scripts/analyze-market-blend.mjs",
     "calibrate:rotowire": "node scripts/calibrate-rotowire-hold.mjs",
     "validate:model": "npm run build && node scripts/validate-model.mjs"
   },

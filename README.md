@@ -2,7 +2,7 @@
 
 A baseball betting analysis app that combines current MLB data, Statcast expected statistics, recency-aware features, and a rolling-forward-evaluated logistic regression layer. It produces game-winner, NRFI/YRFI, and pitcher strikeout recommendations without a paid language-model API.
 
-Winner projections use the regression only after its training procedure beats the stored-pick baseline on chronologically later games. Approval must pass the full forward window, the latest five eligible slates, and a qualified-tier gate requiring at least 60% accuracy among at least 15 recent predictions rated 55% or higher. A recent accuracy drop automatically pauses production regression use and falls back to the no-vig market probability, then the weighted heuristic. Probabilities are shrunk toward 50% to reduce overconfidence.
+Winner projections use the regression only after its training procedure beats the stored-pick baseline on chronologically later games. Approval must pass the full forward window, the latest five eligible slates, and a qualified-tier gate requiring at least 60% accuracy among at least 15 recent predictions rated 55% or higher. A recent accuracy drop automatically pauses production regression use and falls back to an 85% weighted-statistical probability plus a bounded 15% no-vig market sanity check. Missing odds return the fallback to 100% statistical. Probabilities are shrunk toward 50% to reduce overconfidence.
 
 The current MLB date is excluded from recent-slate approval until the slate is complete. Individual finals can enter model training immediately, but one early result cannot evict an entire older slate or toggle production approval intraday.
 
@@ -62,7 +62,7 @@ Open [http://localhost:3000](http://localhost:3000).
 | `EXPECTED_BATTERS_CSV_PATH` | No | `data/expected_stats_batters.csv` | Optional custom expected-stat CSV path |
 | `EXPECTED_PITCHERS_CSV_PATH` | No | `data/expected_stats_pitchers.csv` | Optional custom expected-stat CSV path |
 
-The analysis engine runs without API keys. When primary two-sided odds are unavailable, winner analysis uses RotoWire's listed pregame moneyline and an empirically fitted hold correction to estimate a complementary no-vig market probability.
+The analysis engine runs without API keys. When primary two-sided odds are unavailable, winner analysis uses RotoWire's listed pregame moneyline and an empirically fitted hold correction to estimate a complementary no-vig market probability. The market remains one bounded model input; it does not replace the statistical engine.
 
 ## Refresh Behavior
 
@@ -78,11 +78,11 @@ The scheduler is timezone-explicit, so the Oracle VM's operating-system timezone
 
 ## Model Diagnostics
 
-Run `npm run validate:model -- data/app.db` to evaluate the primary and selective regressions with rolling daily holdouts, recent-slate approval metrics, dual-model agreement, and the 55%+ qualified tier separately from forced low-confidence picks. Run `npm run analyze:history -- data/app.db` for recent performance, market agreement, side bias, and feature-variance diagnostics. Run `npm run calibrate:rotowire -- data/app.db` to refit/check the one-sided-line hold correction against stored two-sided markets. These are forward-looking checks; in-sample accuracy is not used as evidence for promotion.
+Run `npm run validate:model -- data/app.db` to evaluate the primary and selective regressions with rolling daily holdouts, recent-slate approval metrics, dual-model agreement, and the 55%+ qualified tier separately from forced low-confidence picks. Run `npm run analyze:history -- data/app.db` for recent performance, market agreement, side bias, and feature-variance diagnostics. Run `npm run analyze:market-blend -- data/app.db` to compare bounded market weights and category directionality without changing production weights. Run `npm run calibrate:rotowire -- data/app.db` to refit/check the one-sided-line hold correction against stored two-sided markets. These are forward-looking checks; in-sample accuracy is not used as evidence for promotion.
 
 ## Persistent Data
 
-The ignored `data/` directory contains the SQLite database and regenerated source files. `data/app.db` is the source of truth for historical feature snapshots, results, and model artifacts. Keep this directory on persistent Oracle storage and back it up before server migrations.
+The ignored `data/` directory contains the SQLite database and regenerated source files. `data/app.db` is the source of truth for historical feature snapshots, results, and model artifacts. Each new snapshot stores the raw statistical lean separately from the final prediction, confidence, engine, and market weight so later evaluation does not conflate those concepts. Keep this directory on persistent Oracle storage and back it up before server migrations.
 
 ## API Endpoints
 

@@ -1,5 +1,5 @@
 import type { LogisticRegressionModel, ModelMetrics, RegressionTrainingRow } from "./regression-types.js";
-import { predictHomeWinProbability, trainLogisticRegression, type RegressionFeatureName } from "./regression-trainer.js";
+import { fallbackHomeWinProbability, predictHomeWinProbability, trainLogisticRegression, type RegressionFeatureName } from "./regression-trainer.js";
 
 export const RECENT_VALIDATION_DATES = 5;
 export const QUALIFIED_CONFIDENCE_THRESHOLD = 0.55;
@@ -64,8 +64,7 @@ export function evaluateHeuristicBaseline(rows: RegressionTrainingRow[]): ModelM
   let probabilitySum = 0;
 
   rows.forEach((row) => {
-    const probability = clampProbability(1 / (1 + Math.exp(-row.heuristicEdge * 0.14)));
-    const homeProbability = row.heuristicPick === row.home ? probability : 1 - probability;
+    const homeProbability = clampProbability(fallbackHomeWinProbability(row));
     const prediction = homeProbability >= 0.5 ? 1 : 0;
     if (prediction === row.homeWin) correct += 1;
     logLoss += -(row.homeWin * Math.log(homeProbability) + (1 - row.homeWin) * Math.log(1 - homeProbability));
