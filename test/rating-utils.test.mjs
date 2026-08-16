@@ -141,12 +141,16 @@ try {
     predictionPick: "HOME",
     predictionConfidence: 51,
     predictionMethod: "test",
+    wagerQualified: true,
+    selectiveConfidence: 57,
     marketWeight: 0.15,
     marketLean: "HOME"
   }]);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].dataQuality, 0.91);
   assert.deepEqual(rows[0].dataQualityNotes, ["partial lineup coverage"]);
+  assert.equal(rows[0].wagerQualified, true);
+  assert.equal(rows[0].selectiveConfidence, 57);
   featureStore.upsertFirstInningFeatureSnapshots([approvedFirstInningRows.snapshots[0]]);
   featureStore.upsertFirstInningResults([approvedFirstInningRows.results[0]]);
   assert.equal(featureStore.readFirstInningFeatureSnapshots().length, 1);

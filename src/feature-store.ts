@@ -69,6 +69,8 @@ function initDatabase() {
       prediction_pick TEXT,
       prediction_confidence REAL,
       prediction_method TEXT,
+      wager_qualified INTEGER NOT NULL DEFAULT 0,
+      selective_confidence REAL,
       market_weight REAL,
       market_lean TEXT,
       analysis_version TEXT NOT NULL DEFAULT 'legacy'
@@ -154,6 +156,12 @@ function ensureWinnerFeatureSnapshotColumns(database: DatabaseSync) {
   }
   if (!names.has("prediction_method")) {
     database.exec("ALTER TABLE winner_feature_snapshots ADD COLUMN prediction_method TEXT");
+  }
+  if (!names.has("wager_qualified")) {
+    database.exec("ALTER TABLE winner_feature_snapshots ADD COLUMN wager_qualified INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!names.has("selective_confidence")) {
+    database.exec("ALTER TABLE winner_feature_snapshots ADD COLUMN selective_confidence REAL");
   }
   if (!names.has("market_weight")) {
     database.exec("ALTER TABLE winner_feature_snapshots ADD COLUMN market_weight REAL");
@@ -290,6 +298,10 @@ function mapFeatureRow(row: Record<string, unknown>): WinnerFeatureSnapshot {
     predictionMethod: row.prediction_method === null || row.prediction_method === undefined
       ? "legacy snapshot"
       : String(row.prediction_method),
+    wagerQualified: Number(row.wager_qualified || 0) === 1,
+    selectiveConfidence: row.selective_confidence === null || row.selective_confidence === undefined
+      ? null
+      : Number(row.selective_confidence),
     marketWeight: row.market_weight === null || row.market_weight === undefined ? null : Number(row.market_weight),
     marketLean: row.market_lean === null ? null : String(row.market_lean),
     analysisVersion: row.analysis_version === null || row.analysis_version === undefined ? "legacy" : String(row.analysis_version)
@@ -329,9 +341,10 @@ export function upsertWinnerFeatureSnapshots(rows: WinnerFeatureSnapshot[]) {
       game_id, snapshot_date, away, home, away_offense, home_offense, away_pitching, home_pitching, away_bullpen, home_bullpen,
       away_trend, home_trend, away_win_prob, home_win_prob, away_defense, home_defense, park_index, venue_name, away_park, home_park,
       away_moneyline, home_moneyline, total, lineup_coverage_away, lineup_coverage_home, data_quality, data_quality_notes,
-      heuristic_pick, heuristic_edge, heuristic_confidence, prediction_pick, prediction_confidence, prediction_method, market_weight,
+      heuristic_pick, heuristic_edge, heuristic_confidence, prediction_pick, prediction_confidence, prediction_method,
+      wager_qualified, selective_confidence, market_weight,
       market_lean, analysis_version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(game_id) DO NOTHING
   `);
 
@@ -349,6 +362,8 @@ export function upsertWinnerFeatureSnapshots(rows: WinnerFeatureSnapshot[]) {
         row.predictionPick ?? row.heuristicPick,
         row.predictionConfidence ?? row.heuristicConfidence,
         row.predictionMethod ?? "legacy snapshot",
+        row.wagerQualified ? 1 : 0,
+        row.selectiveConfidence ?? null,
         row.marketWeight ?? null,
         row.marketLean, row.analysisVersion || "legacy"
       );

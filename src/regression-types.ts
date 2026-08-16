@@ -33,6 +33,8 @@ export type WinnerFeatureSnapshot = {
   predictionPick?: string;
   predictionConfidence?: number;
   predictionMethod?: string;
+  wagerQualified?: boolean;
+  selectiveConfidence?: number | null;
   marketWeight?: number | null;
   marketLean: string | null;
 };
