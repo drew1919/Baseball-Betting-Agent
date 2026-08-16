@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { buildRegressionTrainingRows, predictHomeWinProbability, trainLogisticRegression } from "../dist/regression-trainer.js";
 
 const databasePath = process.argv[2] || "data/app.db";
 const db = new DatabaseSync(databasePath, { readOnly: true });
@@ -60,82 +61,57 @@ function pointBiserial(values, outcomes) {
     * Math.sqrt((positives.length / values.length) * (negatives.length / values.length));
 }
 
-function impliedProbability(odds) {
-  if (!Number.isFinite(odds) || odds === 0) return null;
-  return odds < 0 ? -odds / (-odds + 100) : 100 / (odds + 100);
-}
-
-function featureVector(row) {
-  const awayImplied = impliedProbability(row.away_moneyline);
-  const homeImplied = impliedProbability(row.home_moneyline);
-  const impliedTotal = awayImplied !== null && homeImplied !== null ? awayImplied + homeImplied : 0;
-  const noVigHome = impliedTotal ? homeImplied / impliedTotal : 0.5;
-  return [
-    row.home_offense - row.away_offense,
-    row.home_pitching - row.away_pitching,
-    row.home_bullpen - row.away_bullpen,
-    row.home_trend - row.away_trend,
-    row.home_win_prob - row.away_win_prob,
-    row.home_defense - row.away_defense,
-    row.home_park - row.away_park,
-    noVigHome - 0.5,
-    (row.total ?? 8.5) - 8.5,
-    row.lineup_coverage_home - row.lineup_coverage_away
-  ];
-}
-
-function sigmoid(value) {
-  if (value >= 0) {
-    const z = Math.exp(-value);
-    return 1 / (1 + z);
-  }
-  const z = Math.exp(value);
-  return z / (1 + z);
-}
-
-function trainRegression(trainingRows) {
-  const matrix = trainingRows.map(featureVector);
-  const targets = trainingRows.map((row) => row.home_win);
-  const means = matrix[0].map((_, index) => average(matrix.map((row) => row[index])));
-  const stds = means.map((mean, index) =>
-    Math.sqrt(average(matrix.map((row) => (row[index] - mean) ** 2))) || 1
-  );
-  const normalized = matrix.map((row) => row.map((value, index) => (value - means[index]) / stds[index]));
-  const weights = new Array(means.length).fill(0);
-  let intercept = 0;
-  for (let iteration = 0; iteration < 1200; iteration += 1) {
-    const gradients = new Array(weights.length).fill(0);
-    let interceptGradient = 0;
-    normalized.forEach((row, rowIndex) => {
-      const probability = sigmoid(intercept + row.reduce((sum, value, index) => sum + value * weights[index], 0));
-      const error = probability - targets[rowIndex];
-      interceptGradient += error;
-      row.forEach((value, index) => { gradients[index] += error * value; });
-    });
-    intercept -= 0.035 * interceptGradient / normalized.length;
-    weights.forEach((weight, index) => {
-      weights[index] -= 0.035 * (gradients[index] / normalized.length + 0.02 * weight);
-    });
-  }
-  return { means, stds, weights, intercept };
-}
-
-function regressionProbability(model, row) {
-  const values = featureVector(row);
-  return sigmoid(model.intercept + values.reduce((sum, value, index) =>
-    sum + ((value - model.means[index]) / model.stds[index]) * model.weights[index], 0));
+function trainingInput(row) {
+  return {
+    snapshotDate: row.snapshot_date,
+    gameId: row.game_id,
+    away: row.away,
+    home: row.home,
+    awayOffense: row.away_offense,
+    homeOffense: row.home_offense,
+    awayPitching: row.away_pitching,
+    homePitching: row.home_pitching,
+    awayBullpen: row.away_bullpen,
+    homeBullpen: row.home_bullpen,
+    awayTrend: row.away_trend,
+    homeTrend: row.home_trend,
+    awayWinProb: row.away_win_prob,
+    homeWinProb: row.home_win_prob,
+    awayDefense: row.away_defense,
+    homeDefense: row.home_defense,
+    parkIndex: row.park_index,
+    venueName: row.venue_name,
+    awayPark: row.away_park,
+    homePark: row.home_park,
+    awayMoneyline: row.away_moneyline,
+    homeMoneyline: row.home_moneyline,
+    total: row.total,
+    lineupCoverageAway: row.lineup_coverage_away,
+    lineupCoverageHome: row.lineup_coverage_home,
+    heuristicPick: row.heuristic_pick,
+    heuristicEdge: row.heuristic_edge,
+    heuristicConfidence: row.heuristic_confidence,
+    marketLean: row.market_lean,
+    date: row.snapshot_date,
+    awayScore: row.away_score,
+    homeScore: row.home_score,
+    homeWin: row.home_win
+  };
 }
 
 function walkForwardBacktest(allRows, minimumTrainingRows = 60) {
   const predictions = [];
-  const testDates = [...new Set(allRows.map((row) => row.snapshot_date))];
+  const trainingRows = buildRegressionTrainingRows(allRows.map(trainingInput));
+  const sourceByGameId = new Map(allRows.map((row) => [row.game_id, row]));
+  const testDates = [...new Set(trainingRows.map((row) => row.snapshotDate))];
   testDates.forEach((date) => {
-    const training = allRows.filter((row) => row.snapshot_date < date);
+    const training = trainingRows.filter((row) => row.snapshotDate < date);
     if (training.length < minimumTrainingRows) return;
-    const model = trainRegression(training);
-    allRows.filter((row) => row.snapshot_date === date).forEach((row) => {
-      const probability = regressionProbability(model, row);
-      predictions.push({ ...row, regressionPick: probability >= 0.5 ? row.home : row.away, probability });
+    const model = trainLogisticRegression(training);
+    trainingRows.filter((row) => row.snapshotDate === date).forEach((row) => {
+      const probability = predictHomeWinProbability(model, row);
+      const source = sourceByGameId.get(row.gameId);
+      predictions.push({ ...source, regressionPick: probability >= 0.5 ? row.home : row.away, probability });
     });
   });
   return predictions;

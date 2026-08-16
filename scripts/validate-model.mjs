@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { buildRegressionTrainingRows, predictHomeWinProbability, REGRESSION_FEATURE_NAMES, REGRESSION_FEATURE_VERSION, trainLogisticRegression } from "../dist/regression-trainer.js";
-import { evaluateHeuristicBaseline, evaluateWalkForwardRegression } from "../dist/model-evaluator.js";
+import { evaluateHeuristicBaseline, evaluateWalkForwardRegression, QUALIFIED_CONFIDENCE_THRESHOLD } from "../dist/model-evaluator.js";
 
 const databasePath = process.argv[2] || "data/app.db";
 const incompleteRecentDate = process.argv[3] || undefined;
@@ -103,28 +103,28 @@ function segmentMetrics(segment, picker) {
   return { games: segment.length, correct, accuracy: correct / segment.length };
 }
 
-const highConfidence = predictions.filter(({ probability }) => Math.max(probability, 1 - probability) >= 0.55);
+const highConfidence = predictions.filter(({ probability }) => Math.max(probability, 1 - probability) >= QUALIFIED_CONFIDENCE_THRESHOLD);
 const veryHighConfidence = predictions.filter(({ probability }) => Math.max(probability, 1 - probability) >= 0.60);
-const lowerConfidence = predictions.filter(({ probability }) => Math.max(probability, 1 - probability) < 0.55);
+const lowerConfidence = predictions.filter(({ probability }) => Math.max(probability, 1 - probability) < QUALIFIED_CONFIDENCE_THRESHOLD);
 const recentPredictions = forward.recentStartDate
   ? predictions.filter(({ row }) =>
       row.snapshotDate >= forward.recentStartDate && row.snapshotDate !== incompleteRecentDate
     )
   : [];
-const recentHighConfidence = recentPredictions.filter(({ probability }) => Math.max(probability, 1 - probability) >= 0.55);
-const recentLowerConfidence = recentPredictions.filter(({ probability }) => Math.max(probability, 1 - probability) < 0.55);
-const selectiveQualified = selectivePredictions.filter(({ probability }) => Math.max(probability, 1 - probability) >= 0.55);
+const recentHighConfidence = recentPredictions.filter(({ probability }) => Math.max(probability, 1 - probability) >= QUALIFIED_CONFIDENCE_THRESHOLD);
+const recentLowerConfidence = recentPredictions.filter(({ probability }) => Math.max(probability, 1 - probability) < QUALIFIED_CONFIDENCE_THRESHOLD);
+const selectiveQualified = selectivePredictions.filter(({ probability }) => Math.max(probability, 1 - probability) >= QUALIFIED_CONFIDENCE_THRESHOLD);
 const selectiveByGame = new Map(selectivePredictions.map((entry) => [entry.row.gameId, entry]));
 const primaryQualifiedWithSelective = highConfidence.map((primary) => ({
   ...primary,
   selective: selectiveByGame.get(primary.row.gameId)
 })).filter((entry) => entry.selective);
 const dualQualifiedAgree = primaryQualifiedWithSelective.filter((entry) =>
-  Math.max(entry.selective.probability, 1 - entry.selective.probability) >= 0.55
+  Math.max(entry.selective.probability, 1 - entry.selective.probability) >= QUALIFIED_CONFIDENCE_THRESHOLD
   && entry.regressionPick === entry.selective.regressionPick
 );
 const dualQualifiedDisagree = primaryQualifiedWithSelective.filter((entry) =>
-  Math.max(entry.selective.probability, 1 - entry.selective.probability) >= 0.55
+  Math.max(entry.selective.probability, 1 - entry.selective.probability) >= QUALIFIED_CONFIDENCE_THRESHOLD
   && entry.regressionPick !== entry.selective.regressionPick
 );
 const recentSelectiveQualified = forward.recentStartDate
@@ -137,10 +137,12 @@ const recentDualQualifiedAgree = forward.recentStartDate
       row.snapshotDate >= forward.recentStartDate && row.snapshotDate !== incompleteRecentDate
     )
   : [];
+const dualQualifiedMarketAgree = dualQualifiedAgree.filter((entry) => entry.row.marketLean === entry.regressionPick);
+const recentDualQualifiedMarketAgree = recentDualQualifiedAgree.filter((entry) => entry.row.marketLean === entry.regressionPick);
 const marketAvailable = predictions.filter(({ row }) => row.marketLean);
 const regressionMarketAgree = marketAvailable.filter((entry) => entry.regressionPick === entry.row.marketLean);
 const regressionMarketDisagree = marketAvailable.filter((entry) => entry.regressionPick !== entry.row.marketLean);
-const hybridPicker = (entry) => Math.max(entry.probability, 1 - entry.probability) >= 0.55
+const hybridPicker = (entry) => Math.max(entry.probability, 1 - entry.probability) >= QUALIFIED_CONFIDENCE_THRESHOLD
   ? entry.regressionPick
   : (entry.row.marketLean || entry.regressionPick);
 const calibrationChecks = [0.35, 0.5, 0.65, 0.8, 1].map((factor) => {
@@ -187,12 +189,14 @@ console.log(JSON.stringify({
     dualQualifiedDisagree: segmentMetrics(dualQualifiedDisagree, (entry) => entry.regressionPick),
     recentSelectiveNoTotalQualified: segmentMetrics(recentSelectiveQualified, (entry) => entry.regressionPick),
     recentDualQualifiedAgree: segmentMetrics(recentDualQualifiedAgree, (entry) => entry.regressionPick),
+    dualQualifiedMarketAgree: segmentMetrics(dualQualifiedMarketAgree, (entry) => entry.regressionPick),
+    recentDualQualifiedMarketAgree: segmentMetrics(recentDualQualifiedMarketAgree, (entry) => entry.regressionPick),
     market: segmentMetrics(marketAvailable, (entry) => entry.row.marketLean),
     regressionMarketAgree: segmentMetrics(regressionMarketAgree, (entry) => entry.regressionPick),
     regressionMarketDisagree: segmentMetrics(regressionMarketDisagree, (entry) => entry.regressionPick),
     trainedWithOddsDeployedWithoutOdds: segmentMetrics(noOddsDeploymentPredictions, (entry) => entry.regressionPick),
-    noOddsCalibrated55Plus: segmentMetrics(
-      noOddsDeploymentPredictions.filter(({ probability }) => Math.max(probability, 1 - probability) >= 0.55),
+    noOddsQualified: segmentMetrics(
+      noOddsDeploymentPredictions.filter(({ probability }) => Math.max(probability, 1 - probability) >= QUALIFIED_CONFIDENCE_THRESHOLD),
       (entry) => entry.regressionPick
     ),
     highRegressionOtherwiseMarket: segmentMetrics(predictions, hybridPicker)
