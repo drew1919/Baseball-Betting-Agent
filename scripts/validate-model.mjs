@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { buildRegressionTrainingRows, predictHomeWinProbability, REGRESSION_FEATURE_NAMES, REGRESSION_FEATURE_VERSION, trainLogisticRegression } from "../dist/regression-trainer.js";
+import { buildRegressionTrainingRows, MIN_REGRESSION_DATA_QUALITY, predictHomeWinProbability, REGRESSION_FEATURE_NAMES, REGRESSION_FEATURE_VERSION, regressionTrainingEligible, trainLogisticRegression } from "../dist/regression-trainer.js";
 import { evaluateHeuristicBaseline, evaluateWalkForwardRegression, QUALIFIED_CONFIDENCE_THRESHOLD } from "../dist/model-evaluator.js";
 
 const databasePath = process.argv[2] || "data/app.db";
@@ -14,6 +14,7 @@ const rawRows = db.prepare(`
 
 const joined = rawRows.map((row) => ({
   snapshotDate: row.snapshot_date,
+  analysisVersion: row.analysis_version,
   gameId: row.game_id,
   away: row.away,
   home: row.home,
@@ -38,9 +39,11 @@ const joined = rawRows.map((row) => ({
   total: row.total,
   lineupCoverageAway: row.lineup_coverage_away,
   lineupCoverageHome: row.lineup_coverage_home,
+  dataQuality: row.data_quality,
   heuristicPick: row.heuristic_pick,
   heuristicEdge: row.heuristic_edge,
   heuristicConfidence: row.heuristic_confidence,
+  predictionMethod: row.prediction_method,
   marketLean: row.market_lean,
   date: row.date,
   awayScore: row.away_score,
@@ -48,9 +51,10 @@ const joined = rawRows.map((row) => ({
   homeWin: row.home_win
 }));
 
-const trainingRows = buildRegressionTrainingRows(joined);
+const eligibleJoined = joined.filter(regressionTrainingEligible);
+const trainingRows = buildRegressionTrainingRows(eligibleJoined);
 const forward = evaluateWalkForwardRegression(trainingRows, 60, undefined, incompleteRecentDate);
-const noOddsRows = buildRegressionTrainingRows(joined.map((row) => ({
+const noOddsRows = buildRegressionTrainingRows(eligibleJoined.map((row) => ({
   ...row,
   awayMoneyline: null,
   homeMoneyline: null,
@@ -145,7 +149,7 @@ const regressionMarketDisagree = marketAvailable.filter((entry) => entry.regress
 const hybridPicker = (entry) => Math.max(entry.probability, 1 - entry.probability) >= QUALIFIED_CONFIDENCE_THRESHOLD
   ? entry.regressionPick
   : (entry.row.marketLean || entry.regressionPick);
-const calibrationChecks = [0.35, 0.5, 0.65, 0.8, 1].map((factor) => {
+const calibrationChecks = predictions.length ? [0.35, 0.5, 0.65, 0.8, 1].map((factor) => {
   let logLoss = 0;
   let brierScore = 0;
   predictions.forEach(({ probability, row }) => {
@@ -154,7 +158,7 @@ const calibrationChecks = [0.35, 0.5, 0.65, 0.8, 1].map((factor) => {
     brierScore += (adjusted - row.homeWin) ** 2;
   });
   return { factor, logLoss: logLoss / predictions.length, brierScore: brierScore / predictions.length };
-});
+}) : [];
 const byDate = Object.fromEntries(dates.map((date) => [
   date,
   segmentMetrics(predictions.filter((entry) => entry.row.snapshotDate === date), (entry) => entry.regressionPick)
@@ -162,6 +166,12 @@ const byDate = Object.fromEntries(dates.map((date) => [
 
 console.log(JSON.stringify({
   featureVersion: REGRESSION_FEATURE_VERSION,
+  trainingEligibility: {
+    totalJoinedRows: joined.length,
+    eligibleJoinedRows: eligibleJoined.length,
+    excludedJoinedRows: joined.length - eligibleJoined.length,
+    minimumDataQuality: MIN_REGRESSION_DATA_QUALITY
+  },
   trainingRows: trainingRows.length,
   candidateVersion: candidate?.featureVersion || null,
   firstForwardTestDate: forward.firstTestDate,
@@ -174,8 +184,9 @@ console.log(JSON.stringify({
   recentHeuristicMetrics: evaluateHeuristicBaseline(recentTestRows),
   noOddsForwardMetrics: noOddsForward.metrics,
   oddsCoverage: {
-    gamesWithMoneylines: joined.filter((row) => row.awayMoneyline !== null && row.homeMoneyline !== null).length,
-    totalGames: joined.length
+    eligibleGamesWithMoneylines: eligibleJoined.filter((row) => row.awayMoneyline !== null && row.homeMoneyline !== null).length,
+    eligibleGames: eligibleJoined.length,
+    allJoinedGames: joined.length
   },
   heuristicOnForwardWindow: evaluateHeuristicBaseline(testRows),
   strategyChecks: {
