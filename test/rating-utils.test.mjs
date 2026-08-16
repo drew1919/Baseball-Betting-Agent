@@ -151,6 +151,10 @@ try {
   assert.equal(regressionTrainingEligible({ ...modernFeatureSnapshot, analysisVersion: "legacy" }), false);
   assert.equal(regressionTrainingEligible({ ...modernFeatureSnapshot, dataQuality: 0.74 }), false);
   assert.equal(regressionTrainingEligible({ ...modernFeatureSnapshot, predictionMethod: "legacy snapshot" }), false);
+  assert.equal(regressionTrainingEligible({
+    ...modernFeatureSnapshot,
+    dataQualityNotes: ["lineups are projected rather than confirmed"]
+  }), false);
   const rows = featureStore.upsertWinnerFeatureSnapshots([modernFeatureSnapshot]);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].dataQuality, 0.91);

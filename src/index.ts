@@ -44,6 +44,7 @@ const MODEL_DATA_CACHE_MS = 1000 * 60 * 60 * 6;
 const MODEL_DATA_MAX_AGE_MS = 1000 * 60 * 60 * 8;
 const SOURCE_STALE_MS = 1000 * 60 * 60 * 26;
 const WINNER_SCOREBOARD_CACHE_MS = 1000 * 60 * 2;
+const PREGAME_SNAPSHOT_POLL_MS = 1000 * 60 * 10;
 const ROTOWIRE_MARKET_SHRINK = 0.915;
 const MODEL_APPROVAL_MIN_LIFT = 0.02;
 const RECENT_APPROVAL_MIN_GAMES = 30;
@@ -375,6 +376,9 @@ let nextMorningRefreshAt: string | null = null;
 let lastMorningRefreshAt: string | null = null;
 let lastMorningRefreshStatus: "idle" | "ok" | "degraded" | "error" = "idle";
 let lastMorningRefreshError: string | null = null;
+let lastPregameSnapshotPollAt: string | null = null;
+let lastPregameSnapshotPollStatus: "idle" | "ok" | "error" = "idle";
+let lastPregameSnapshotPollError: string | null = null;
 const sourceRefreshStates = new Map<string, SourceRefreshState>();
 
 function getCurrentStats() {
@@ -2696,9 +2700,12 @@ async function buildWinnerFeatureSnapshot(game: MatchedGameContext, snapshotDate
 async function snapshotWinnerFeaturesForGames(games: MatchedGameContext[], snapshotDate: string) {
   const scoreboard = await refreshRecentWinnerScoreboard();
   const statuses = new Map(scoreboard.statuses.map((status) => [status.gameId, status.state]));
+  const existingGameIds = new Set(readWinnerFeatureSnapshots().map((snapshot) => snapshot.gameId));
   const eligibleGames = games.filter((game) => {
     const gameId = buildWinnerGameId(snapshotDate, game.away, game.home);
-    return statuses.get(gameId) === "scheduled";
+    return game.lineupsConfirmed
+      && statuses.get(gameId) === "scheduled"
+      && !existingGameIds.has(gameId);
   });
   const snapshots = await Promise.all(eligibleGames.map((game) => buildWinnerFeatureSnapshot(game, snapshotDate)));
   return upsertWinnerFeatureSnapshots(snapshots);
@@ -2742,11 +2749,38 @@ async function buildFirstInningFeatureSnapshot(
 async function snapshotFirstInningFeaturesForGames(games: MatchedGameContext[], snapshotDate: string) {
   const scoreboard = await refreshRecentWinnerScoreboard();
   const statuses = new Map(scoreboard.statuses.map((status) => [status.gameId, status.state]));
+  const existingGameIds = new Set(readFirstInningFeatureSnapshots().map((snapshot) => snapshot.gameId));
   const eligibleGames = games.filter((game) =>
-    statuses.get(buildWinnerGameId(snapshotDate, game.away, game.home)) === "scheduled"
+    game.lineupsConfirmed
+    && statuses.get(buildWinnerGameId(snapshotDate, game.away, game.home)) === "scheduled"
+    && !existingGameIds.has(buildWinnerGameId(snapshotDate, game.away, game.home))
   );
   const snapshots = await Promise.all(eligibleGames.map((game) => buildFirstInningFeatureSnapshot(game, snapshotDate)));
   return upsertFirstInningFeatureSnapshots(snapshots);
+}
+
+async function snapshotLineupPayload(payload: Awaited<ReturnType<typeof loadDailyLineups>>) {
+  const snapshotDate = mlbCalendarDate();
+  const matchedGames = payload.games.map((game) => matchGameCard(game));
+  await Promise.all([
+    snapshotWinnerFeaturesForGames(matchedGames, snapshotDate),
+    snapshotFirstInningFeaturesForGames(matchedGames, snapshotDate)
+  ]);
+}
+
+async function pollConfirmedPregameSnapshots() {
+  try {
+    const payload = await loadDailyLineups();
+    await snapshotLineupPayload(payload);
+    lastPregameSnapshotPollAt = new Date().toISOString();
+    lastPregameSnapshotPollStatus = "ok";
+    lastPregameSnapshotPollError = null;
+  } catch (error) {
+    lastPregameSnapshotPollAt = new Date().toISOString();
+    lastPregameSnapshotPollStatus = "error";
+    lastPregameSnapshotPollError = getErrorMessage(error);
+    console.warn("Confirmed-lineup snapshot poll failed:", lastPregameSnapshotPollError);
+  }
 }
 
 function firstInningPerformance(): FirstInningPerformance {
@@ -2968,12 +3002,7 @@ async function runMorningRefresh(reason: "startup" | "scheduled" | "stale" | "ma
 
     try {
       const payload = await loadDailyLineups();
-      const snapshotDate = mlbCalendarDate();
-      const matchedGames = payload.games.map((game) => matchGameCard(game));
-      await Promise.all([
-        snapshotWinnerFeaturesForGames(matchedGames, snapshotDate),
-        snapshotFirstInningFeaturesForGames(matchedGames, snapshotDate)
-      ]);
+      await snapshotLineupPayload(payload);
     } catch (error) {
       failures.push(`lineup snapshot: ${getErrorMessage(error)}`);
     }
@@ -3554,6 +3583,13 @@ app.get("/api/health", (_req, res) => {
       lastMorningRefreshStatus,
       lastMorningRefreshError
     },
+    pregameSnapshots: {
+      confirmedLineupsOnly: true,
+      pollIntervalMinutes: PREGAME_SNAPSHOT_POLL_MS / 60_000,
+      lastPollAt: lastPregameSnapshotPollAt,
+      lastPollStatus: lastPregameSnapshotPollStatus,
+      lastPollError: lastPregameSnapshotPollError
+    },
     checkedAt: new Date().toISOString()
   });
 });
@@ -3586,11 +3622,8 @@ app.get("/api/odds", async (_req, res) => {
 app.get("/api/lineups", async (_req, res) => {
   try {
     const payload = await loadDailyLineups();
-    const snapshotDate = mlbCalendarDate();
-    const matchedGames = payload.games.map((game) => matchGameCard(game));
     try {
-      await snapshotWinnerFeaturesForGames(matchedGames, snapshotDate);
-      await snapshotFirstInningFeaturesForGames(matchedGames, snapshotDate);
+      await snapshotLineupPayload(payload);
     } catch (error) {
       console.warn("Winner feature snapshot skipped:", getErrorMessage(error));
     }
@@ -3889,4 +3922,9 @@ app.listen(PORT, () => {
       console.warn("Scheduled winner result reconciliation failed:", getErrorMessage(error));
     });
   }, WINNER_SCOREBOARD_CACHE_MS);
+  setInterval(() => {
+    pollConfirmedPregameSnapshots().catch((error) => {
+      console.warn("Scheduled confirmed-lineup snapshot poll failed:", getErrorMessage(error));
+    });
+  }, PREGAME_SNAPSHOT_POLL_MS);
 });
