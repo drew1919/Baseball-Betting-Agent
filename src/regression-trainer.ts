@@ -17,6 +17,7 @@ export const REGRESSION_FEATURE_NAMES: readonly RegressionFeatureName[] = FEATUR
 
 export const REGRESSION_FEATURE_VERSION = 2;
 export const MIN_REGRESSION_SAMPLE = 60;
+export const FALLBACK_MARKET_WEIGHT = 0.15;
 const PROBABILITY_CALIBRATION_FACTOR = 0.5;
 
 function impliedProbability(odds: number | null) {
@@ -53,6 +54,21 @@ function sigmoid(value: number) {
   }
   const z = Math.exp(value);
   return z / (1 + z);
+}
+
+export function fallbackHomeWinProbability(
+  row: WinnerFeatureSnapshot,
+  marketWeight = FALLBACK_MARKET_WEIGHT
+) {
+  const signedEdge = row.heuristicPick === row.home ? row.heuristicEdge : -row.heuristicEdge;
+  const rawStatistical = sigmoid(signedEdge * 0.14);
+  const statistical = 0.5 + (rawStatistical - 0.5) * 0.35;
+  const awayImplied = impliedProbability(row.awayMoneyline);
+  const homeImplied = impliedProbability(row.homeMoneyline);
+  const impliedTotal = (awayImplied || 0) + (homeImplied || 0);
+  if (awayImplied === null || homeImplied === null || !impliedTotal) return statistical;
+  const market = homeImplied / impliedTotal;
+  return statistical * (1 - marketWeight) + market * marketWeight;
 }
 
 export function buildRegressionTrainingRows(rows: Array<WinnerFeatureSnapshot & WinnerResultRow>): RegressionTrainingRow[] {

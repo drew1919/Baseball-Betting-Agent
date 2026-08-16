@@ -28,6 +28,10 @@ export type WinnerFeatureSnapshot = {
   heuristicPick: string;
   heuristicEdge: number;
   heuristicConfidence: number;
+  predictionPick?: string;
+  predictionConfidence?: number;
+  predictionMethod?: string;
+  marketWeight?: number | null;
   marketLean: string | null;
 };
 

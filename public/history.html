@@ -193,6 +193,7 @@
     background: var(--panel-2);
     border: 1px solid var(--border);
   }
+  .engine-label { margin-top: 5px; max-width: 190px; color: var(--muted); font-size: 10px; line-height: 1.25; }
 
   .badge {
     display: inline-flex;
@@ -359,7 +360,7 @@
     tr.innerHTML = `
       <td class="date-cell">${game.date}</td>
       <td class="matchup">${game.away}<span class="at">@</span>${game.home}</td>
-      <td><span class="pick-chip">${game.predictedWinner || '—'}</span></td>
+      <td><span class="pick-chip">${game.predictedWinner || '—'}</span><div class="engine-label">${game.predictionMethod || 'legacy snapshot'}</div></td>
       <td>${resultBadge}</td>
       <td class="num-cell">${finalScore}</td>
       <td class="num-cell">${game.edge !== null && game.edge !== undefined ? game.edge.toFixed(1) : '—'}</td>
