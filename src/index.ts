@@ -11,7 +11,8 @@ import { buildWinnerGameId, fetchWinnerResults, fetchWinnerScoreboard, type Winn
 import { buildRegressionTrainingRows, FALLBACK_MARKET_WEIGHT, fallbackHomeWinProbability, MIN_REGRESSION_SAMPLE, predictHomeWinProbability, REGRESSION_FEATURE_NAMES, REGRESSION_FEATURE_VERSION, trainLogisticRegression } from "./regression-trainer.js";
 import { evaluateHeuristicBaseline, evaluateRegressionModel, evaluateWalkForwardRegression, QUALIFIED_CONFIDENCE_THRESHOLD, RECENT_VALIDATION_DATES } from "./model-evaluator.js";
 import type { RegressionReport, WinnerFeatureSnapshot } from "./regression-types.js";
-import { clampPlayerRating, sampleAdjustedPlayerRating } from "./rating-utils.js";
+import { clampPlayerRating, lineupAdjustedTeamRating, sampleAdjustedPlayerRating } from "./rating-utils.js";
+import { shrinkProbabilityToEven, winnerEvidenceQuality } from "./prediction-quality.js";
 
 dotenv.config();
 
@@ -20,7 +21,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(process.cwd(), "public")));
 
 const PORT = process.env.PORT || 3000;
-const ANALYSIS_VERSION = "models-v8.3-sample-adjusted-ratings";
+const ANALYSIS_VERSION = "models-v8.4-evidence-adjusted-confidence";
 const CURRENT_SEASON = new Date().getFullYear();
 const PREVIOUS_SEASON = CURRENT_SEASON - 1;
 
@@ -176,6 +177,7 @@ type MatchedGameContext = {
   homeBatters: BatterStat[];
   rotowireLine: string | null;
   rotowireTotal: number | null;
+  lineupsConfirmed: boolean;
 };
 
 type FirstInningPitcherSplit = {
@@ -2032,7 +2034,8 @@ function matchGameContext(gameContext: string): MatchedGameContext | null {
     homeBatters: compactBatters(collectNamedPlayersFromContext(gameContext, teams.home)
       .map((name) => findBatterStat(name))),
     rotowireLine,
-    rotowireTotal: Number.isFinite(rotowireTotal) ? rotowireTotal : null
+    rotowireTotal: Number.isFinite(rotowireTotal) ? rotowireTotal : null,
+    lineupsConfirmed: /confirmed lineups?/i.test(gameContext)
   };
 }
 
@@ -2048,7 +2051,8 @@ function matchGameCard(card: GameCard): MatchedGameContext {
     awayBatters: compactBatters((card.awayLineup || []).map((batter) => findBatterStat(batter.name))),
     homeBatters: compactBatters((card.homeLineup || []).map((batter) => findBatterStat(batter.name))),
     rotowireLine: card.line,
-    rotowireTotal: Number.isFinite(parsedTotal) ? parsedTotal : null
+    rotowireTotal: Number.isFinite(parsedTotal) ? parsedTotal : null,
+    lineupsConfirmed: card.confirmed
   };
 }
 
@@ -2186,7 +2190,7 @@ async function combinedNrfiScore(game: MatchedGameContext) {
 
 function rankOffense(lineup: BatterStat[], recentStats = new Map<string, RecentBatterStat>()) {
   if (!lineup.length) return 50;
-  return average(
+  return lineupAdjustedTeamRating(
     lineup.map((batter) => {
       const rawSeasonRating = 50
         + (batter.xwoba - 0.320) * 90
@@ -2202,7 +2206,9 @@ function rankOffense(lineup: BatterStat[], recentStats = new Map<string, RecentB
         + ((recent.bbPercent - recent.kPercent) + 15) * 0.20);
       const recentWeight = Math.min(0.38, (recent.pa / 120) * 0.38);
       return seasonRating * (1 - recentWeight) + recentRating * recentWeight;
-    })
+    }),
+    9,
+    50
   );
 }
 
@@ -2382,6 +2388,18 @@ async function buildWinnerBreakdown(game: MatchedGameContext) {
   const homeDefenseRating = defenseRating(homeDefense);
   const awayParkRating = parkRating(parkFactor, awayOffense, awayPitching);
   const homeParkRating = parkRating(parkFactor, homeOffense, homePitching);
+  const awayLineupCoverage = lineupCoverageRatio(game.away, game.awayBatters);
+  const homeLineupCoverage = lineupCoverageRatio(game.home, game.homeBatters);
+  const dataQuality = winnerEvidenceQuality({
+    awayLineupCoverage,
+    homeLineupCoverage,
+    awayStarterQuality: game.awayPitcher ? 1 : game.awayStarter?.era ? 0.65 : 0,
+    homeStarterQuality: game.homePitcher ? 1 : game.homeStarter?.era ? 0.65 : 0,
+    awayBullpenAvailable: awayBullpen !== null,
+    homeBullpenAvailable: homeBullpen !== null,
+    marketAvailable: awayImplied !== null && homeImplied !== null,
+    lineupsConfirmed: game.lineupsConfirmed
+  });
 
   const weights = winnerWeights();
   const awayScore = awayOffense * weights.offense
@@ -2436,7 +2454,10 @@ async function buildWinnerBreakdown(game: MatchedGameContext) {
     odds,
     marketLean,
     awayImplied,
-    homeImplied
+    homeImplied,
+    awayLineupCoverage,
+    homeLineupCoverage,
+    dataQuality
   };
 }
 
@@ -2466,7 +2487,9 @@ function winnerPrediction(game: MatchedGameContext, breakdown: Awaited<ReturnTyp
       selectiveConfirmation: false,
       selectiveConfidence: null,
       heuristicPick: snapshot.heuristicPick,
-      marketHomeProbability
+      marketHomeProbability,
+      dataQuality: snapshot.dataQuality ?? breakdown.dataQuality.score,
+      dataQualityNotes: snapshot.dataQualityNotes ?? breakdown.dataQuality.notes
     };
   }
   const production = readProductionRegressionModel();
@@ -2507,8 +2530,10 @@ function winnerPrediction(game: MatchedGameContext, breakdown: Awaited<ReturnTyp
     awayMoneyline: breakdown.odds?.awayMoneyline ?? null,
     homeMoneyline: breakdown.odds?.homeMoneyline ?? null,
     total: breakdown.odds?.total ?? null,
-    lineupCoverageAway: lineupCoverageRatio(game.away, game.awayBatters),
-    lineupCoverageHome: lineupCoverageRatio(game.home, game.homeBatters),
+    lineupCoverageAway: breakdown.awayLineupCoverage,
+    lineupCoverageHome: breakdown.homeLineupCoverage,
+    dataQuality: breakdown.dataQuality.score,
+    dataQualityNotes: breakdown.dataQuality.notes,
     heuristicPick: breakdown.lean,
     heuristicEdge: Math.abs(breakdown.edge),
     heuristicConfidence: Math.max(statisticalHomeProbability, 1 - statisticalHomeProbability) * 100,
@@ -2526,6 +2551,7 @@ function winnerPrediction(game: MatchedGameContext, breakdown: Awaited<ReturnTyp
       method = "rolling-validated regression";
     }
   }
+  homeProbability = shrinkProbabilityToEven(homeProbability, breakdown.dataQuality.reliability);
 
   const pick = homeProbability >= 0.5 ? game.home : game.away;
   const confidence = Math.max(homeProbability, 1 - homeProbability) * 100;
@@ -2552,11 +2578,14 @@ function winnerPrediction(game: MatchedGameContext, breakdown: Awaited<ReturnTyp
     validatedStrong: method === "rolling-validated regression"
       && marketHomeProbability !== null
       && confidence >= QUALIFIED_CONFIDENCE_THRESHOLD * 100
+      && breakdown.dataQuality.score >= 0.85
       && selectiveConfirmation,
     selectiveConfirmation,
     selectiveConfidence,
     heuristicPick: breakdown.lean,
-    marketHomeProbability
+    marketHomeProbability,
+    dataQuality: breakdown.dataQuality.score,
+    dataQualityNotes: breakdown.dataQuality.notes
   };
 }
 
@@ -2569,8 +2598,8 @@ function lineupCoverageRatio(teamAbbreviation: string, matchedBatters: BatterSta
 async function buildWinnerFeatureSnapshot(game: MatchedGameContext, snapshotDate: string): Promise<WinnerFeatureSnapshot> {
   const breakdown = await buildWinnerBreakdown(game);
   const prediction = winnerPrediction(game, breakdown);
-  const awayCoverage = lineupCoverageRatio(game.away, game.awayBatters);
-  const homeCoverage = lineupCoverageRatio(game.home, game.homeBatters);
+  const awayCoverage = breakdown.awayLineupCoverage;
+  const homeCoverage = breakdown.homeLineupCoverage;
   const heuristicEdge = Math.abs(breakdown.edge);
   const rawHomeProbability = 1 / (1 + Math.exp(-breakdown.edge * 0.14));
   const statisticalHomeProbability = 0.5 + (rawHomeProbability - 0.5) * 0.35;
@@ -2603,6 +2632,8 @@ async function buildWinnerFeatureSnapshot(game: MatchedGameContext, snapshotDate
     total: breakdown.odds?.total ?? null,
     lineupCoverageAway: awayCoverage,
     lineupCoverageHome: homeCoverage,
+    dataQuality: breakdown.dataQuality.score,
+    dataQualityNotes: breakdown.dataQuality.notes,
     heuristicPick: breakdown.lean,
     heuristicEdge,
     heuristicConfidence,
@@ -2902,6 +2933,7 @@ async function chooseBestGeneralBet(game: MatchedGameContext) {
       tag: recommendation(nrfiConfidence, 62, 54),
       score: nrfi.combined,
       confidence: nrfiConfidence,
+      dataQuality: winner.dataQuality,
       reason: total !== null
         ? `Both halves of the first inning project clean enough, and the market total at **${formatNumber(total, 1)}** supports the lower-run environment.`
         : "Both halves of the first inning project clean enough, so the full-inning NRFI angle beats the side."
@@ -2914,6 +2946,7 @@ async function chooseBestGeneralBet(game: MatchedGameContext) {
       tag: recommendation(winnerConfidence, 24, 12),
       score: winnerEdge,
       confidence: winnerConfidence,
+      dataQuality: winner.dataQuality,
       reason: `The primary and no-total confirmation regressions both support **${winner.pick}**; primary confidence is **${formatNumber(winner.confidence)}%** and selective confidence is **${formatNumber(winner.selectiveConfidence || 0)}%**.`
     };
   }
@@ -2923,6 +2956,7 @@ async function chooseBestGeneralBet(game: MatchedGameContext) {
     tag: recommendation(yrfiConfidence, 62, 54),
     score: 70 - nrfi.combined,
     confidence: yrfiConfidence,
+    dataQuality: winner.dataQuality,
     reason: total !== null
       ? `At least one half-inning looks too fragile, and the market total at **${formatNumber(total, 1)}** supports a livelier scoring environment.`
       : "At least one half-inning looks too fragile, so YRFI is the stronger forced first-inning recommendation."
@@ -3002,6 +3036,7 @@ async function analyzeWinner(game: MatchedGameContext) {
       `${game.away} win-prob details: batting **${formatNumber(breakdown.awayBattingImpact?.score || 0)}** / pitching **${formatNumber(breakdown.awayPitchingImpact?.score || 0)}**. ${game.home} win-prob details: batting **${formatNumber(breakdown.homeBattingImpact?.score || 0)}** / pitching **${formatNumber(breakdown.homePitchingImpact?.score || 0)}**.`,
       oddsLine,
       `Prediction engine: **${prediction.method}**. Conservative win-probability estimate: **${formatNumber(prediction.confidence)}%** for ${lean}. The statistical core preferred **${prediction.heuristicPick}**${breakdown.marketLean ? ` and the no-vig market side is **${breakdown.marketLean}**` : ""}.`,
+      `Evidence quality: **${formatNumber(prediction.dataQuality * 100, 0)}%**${prediction.dataQualityNotes.length ? ` (${prediction.dataQualityNotes.join(", ")})` : " (complete)"}. Missing evidence shrinks certainty toward 50% but does not replace the model's preferred side.`,
       `The statistical core is offense ${formatNumber(breakdown.weights.offense * 100, 0)}%, total pitching 30% (starter ${formatNumber(breakdown.weights.starter * 100, 0)}% + bullpen ${formatNumber(breakdown.weights.bullpen * 100, 0)}%), recency/trend ${formatNumber(breakdown.weights.trend * 100, 0)}%, win-probability 10%, defense 5%, and park 2%. When regression is paused and odds exist, that core supplies 85% of the final probability and the no-vig market supplies a bounded 15% sanity check.`,
     `${game.awayBatters.length && game.homeBatters.length ? "This read is using matched lineup bats from the selected game context." : "Lineup coverage is partial, so treat this as a softer lean."}`,
     `${tag} Recommendation: **${lean}** moneyline at **${formatNumber(prediction.confidence)}%** model confidence. ${prediction.validatedStrong ? "This clears the dual-model rolling-forward best-bet tier." : "This is a full-slate projection, not a validated high-confidence best bet."}`
@@ -3102,7 +3137,8 @@ async function topWinnerGamesFromSlate() {
           matched,
           pick: prediction.pick,
           confidence: prediction.confidence,
-          method: prediction.method
+          method: prediction.method,
+          dataQuality: prediction.dataQuality
         };
       })))
       .filter(({ matched }) => matched.awayPitcher || matched.homePitcher || matched.awayBatters.length || matched.homeBatters.length)
@@ -3118,8 +3154,8 @@ async function topWinnerGamesFromSlate() {
 
     return [
       "**Projected winners today**",
-      ...ranked.map(({ matched, pick, confidence, method }, index) =>
-        `${index + 1}. **${matched.away} @ ${matched.home}** -> **${pick}** moneyline. Calibrated win probability **${formatNumber(confidence)}%** via ${method}.`
+      ...ranked.map(({ matched, pick, confidence, method, dataQuality }, index) =>
+        `${index + 1}. **${matched.away} @ ${matched.home}** -> **${pick}** moneyline. Calibrated win probability **${formatNumber(confidence)}%** via ${method}; evidence quality **${formatNumber(dataQuality * 100, 0)}%**.`
       ),
       `${recommendation(ranked[0].confidence, 62, 56)} Strongest winner lean on the current slate: **${ranked[0].pick}** in **${ranked[0].matched.away} @ ${ranked[0].matched.home}** at **${formatNumber(ranked[0].confidence)}%**.`
     ].join("\n\n");
@@ -3159,9 +3195,11 @@ async function topBestBetsFromSlate() {
     }
 
     const qualifiesStrongly = ({ bestBet }: typeof ranked[number]) =>
-      bestBet.type === "Winner" ? bestBet.confidence >= 58 : bestBet.confidence >= 66;
+      bestBet.dataQuality >= 0.85
+      && (bestBet.type === "Winner" ? bestBet.confidence >= 58 : bestBet.confidence >= 66);
     const qualifies = ({ bestBet }: typeof ranked[number]) =>
-      bestBet.type === "Winner" ? bestBet.confidence >= 55 : bestBet.confidence >= 60;
+      bestBet.dataQuality >= 0.72
+      && (bestBet.type === "Winner" ? bestBet.confidence >= 55 : bestBet.confidence >= 60);
     let selected = ranked.filter(qualifiesStrongly).slice(0, 8);
     if (!selected.length) {
       selected = ranked.filter(qualifies).slice(0, 5);
@@ -3175,7 +3213,7 @@ async function topBestBetsFromSlate() {
       `Returning **${selected.length}** slate play${selected.length === 1 ? "" : "s"} based on the model's strongest confidence tiers.`,
       ...selected.map(({ matched, bestBet, winnerPick }, index) => {
         const market = bestBet.type === "Winner" ? `${winnerPick} moneyline` : bestBet.type;
-        return `${index + 1}. **${matched.away} @ ${matched.home}** -> **${market}**. Confidence **${formatNumber(bestBet.confidence)}** (${confidenceTier(bestBet.confidence)}). ${bestBet.reason}`;
+        return `${index + 1}. **${matched.away} @ ${matched.home}** -> **${market}**. Confidence **${formatNumber(bestBet.confidence)}** (${confidenceTier(bestBet.confidence)}); evidence quality **${formatNumber(bestBet.dataQuality * 100, 0)}%**. ${bestBet.reason}`;
       }),
       `${selected[0].bestBet.tag} Strongest overall slate angle: **${selected[0].bestBet.type === "Winner" ? selected[0].winnerPick + " moneyline" : selected[0].bestBet.type}** in **${selected[0].matched.away} @ ${selected[0].matched.home}**.`
     ].join("\n\n");

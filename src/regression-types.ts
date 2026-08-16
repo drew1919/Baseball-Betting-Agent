@@ -25,6 +25,8 @@ export type WinnerFeatureSnapshot = {
   total: number | null;
   lineupCoverageAway: number;
   lineupCoverageHome: number;
+  dataQuality?: number;
+  dataQualityNotes?: string[];
   heuristicPick: string;
   heuristicEdge: number;
   heuristicConfidence: number;
