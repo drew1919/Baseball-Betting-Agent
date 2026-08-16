@@ -17,3 +17,16 @@ export function sampleAdjustedPlayerRating(
   const boundedRating = clampPlayerRating(rawRating, minimum, maximum);
   return priorRating + (boundedRating - priorRating) * reliability;
 }
+
+export function lineupAdjustedTeamRating(
+  playerRatings: number[],
+  expectedPlayers = 9,
+  neutralRating = 50
+) {
+  const boundedExpectedPlayers = Math.max(1, Math.floor(expectedPlayers));
+  const observedRatings = playerRatings.slice(0, boundedExpectedPlayers);
+  const missingPlayers = Math.max(0, boundedExpectedPlayers - observedRatings.length);
+  const total = observedRatings.reduce((sum, rating) => sum + rating, 0)
+    + missingPlayers * neutralRating;
+  return total / boundedExpectedPlayers;
+}

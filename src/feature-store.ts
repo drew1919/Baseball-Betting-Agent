@@ -60,6 +60,8 @@ function initDatabase() {
       total REAL,
       lineup_coverage_away REAL NOT NULL,
       lineup_coverage_home REAL NOT NULL,
+      data_quality REAL,
+      data_quality_notes TEXT,
       heuristic_pick TEXT NOT NULL,
       heuristic_edge REAL NOT NULL,
       heuristic_confidence REAL NOT NULL,
@@ -129,6 +131,12 @@ function ensureWinnerFeatureSnapshotColumns(database: DatabaseSync) {
   }
   if (!names.has("market_weight")) {
     database.exec("ALTER TABLE winner_feature_snapshots ADD COLUMN market_weight REAL");
+  }
+  if (!names.has("data_quality")) {
+    database.exec("ALTER TABLE winner_feature_snapshots ADD COLUMN data_quality REAL");
+  }
+  if (!names.has("data_quality_notes")) {
+    database.exec("ALTER TABLE winner_feature_snapshots ADD COLUMN data_quality_notes TEXT");
   }
 }
 
@@ -209,6 +217,10 @@ function writeArtifactToDatabase(database: DatabaseSync, kind: string, value: un
 
 const database = initDatabase();
 
+export function closeFeatureStore() {
+  database.close();
+}
+
 function mapFeatureRow(row: Record<string, unknown>): WinnerFeatureSnapshot {
   return {
     snapshotDate: String(row.snapshot_date),
@@ -236,6 +248,10 @@ function mapFeatureRow(row: Record<string, unknown>): WinnerFeatureSnapshot {
     total: row.total === null ? null : Number(row.total),
     lineupCoverageAway: Number(row.lineup_coverage_away),
     lineupCoverageHome: Number(row.lineup_coverage_home),
+    dataQuality: row.data_quality === null || row.data_quality === undefined ? undefined : Number(row.data_quality),
+    dataQualityNotes: row.data_quality_notes === null || row.data_quality_notes === undefined
+      ? undefined
+      : JSON.parse(String(row.data_quality_notes)) as string[],
     heuristicPick: String(row.heuristic_pick),
     heuristicEdge: Number(row.heuristic_edge),
     heuristicConfidence: Number(row.heuristic_confidence),
@@ -286,10 +302,10 @@ export function upsertWinnerFeatureSnapshots(rows: WinnerFeatureSnapshot[]) {
     INSERT INTO winner_feature_snapshots (
       game_id, snapshot_date, away, home, away_offense, home_offense, away_pitching, home_pitching, away_bullpen, home_bullpen,
       away_trend, home_trend, away_win_prob, home_win_prob, away_defense, home_defense, park_index, venue_name, away_park, home_park,
-      away_moneyline, home_moneyline, total, lineup_coverage_away, lineup_coverage_home,
+      away_moneyline, home_moneyline, total, lineup_coverage_away, lineup_coverage_home, data_quality, data_quality_notes,
       heuristic_pick, heuristic_edge, heuristic_confidence, prediction_pick, prediction_confidence, prediction_method, market_weight,
       market_lean, analysis_version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(game_id) DO NOTHING
   `);
 
@@ -302,6 +318,7 @@ export function upsertWinnerFeatureSnapshots(rows: WinnerFeatureSnapshot[]) {
         row.awayTrend, row.homeTrend, row.awayWinProb, row.homeWinProb, row.awayDefense, row.homeDefense,
         row.parkIndex, row.venueName, row.awayPark, row.homePark,
         row.awayMoneyline, row.homeMoneyline, row.total, row.lineupCoverageAway, row.lineupCoverageHome,
+        row.dataQuality ?? null, row.dataQualityNotes ? JSON.stringify(row.dataQualityNotes) : null,
         row.heuristicPick, row.heuristicEdge, row.heuristicConfidence,
         row.predictionPick ?? row.heuristicPick,
         row.predictionConfidence ?? row.heuristicConfidence,

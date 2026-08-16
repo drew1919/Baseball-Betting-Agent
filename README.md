@@ -8,6 +8,8 @@ The current MLB date is excluded from recent-slate approval until the slate is c
 
 Player-level expected-stat ratings use a 120-PA/BF reliability prior and bounded component ratings. This prevents a debut-sized Statcast sample from overpowering eight established lineup players or a full team pitching profile while preserving most of the signal for regulars with substantial samples.
 
+Missing lineup slots are scored at a neutral 50 rather than allowing a partial lineup to represent the whole offense. Each winner snapshot also records an evidence-quality score based on lineup coverage, starter Statcast coverage, bullpen availability, market availability, and lineup confirmation. Low-quality games still receive a forced full-slate lean, but their probability edge is shrunk toward 50% and they are not presented as validated high-confidence bets.
+
 Complete-slate winner requests use the primary regression. Winner recommendations can enter `best bets` only when an independently trained no-total selective regression is also approved, rates the same side at 55% or higher, and agrees with a 55%+ primary prediction. This keeps forced projections visible without treating them as equally bettable.
 
 ## Model Inputs
