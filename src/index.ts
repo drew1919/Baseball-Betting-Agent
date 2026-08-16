@@ -11,6 +11,7 @@ import { buildWinnerGameId, fetchWinnerResults, fetchWinnerScoreboard, type Winn
 import { buildRegressionTrainingRows, FALLBACK_MARKET_WEIGHT, fallbackHomeWinProbability, MIN_REGRESSION_SAMPLE, predictHomeWinProbability, REGRESSION_FEATURE_NAMES, REGRESSION_FEATURE_VERSION, trainLogisticRegression } from "./regression-trainer.js";
 import { evaluateHeuristicBaseline, evaluateRegressionModel, evaluateWalkForwardRegression, QUALIFIED_CONFIDENCE_THRESHOLD, RECENT_VALIDATION_DATES } from "./model-evaluator.js";
 import type { RegressionReport, WinnerFeatureSnapshot } from "./regression-types.js";
+import { clampPlayerRating, sampleAdjustedPlayerRating } from "./rating-utils.js";
 
 dotenv.config();
 
@@ -19,7 +20,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(process.cwd(), "public")));
 
 const PORT = process.env.PORT || 3000;
-const ANALYSIS_VERSION = "models-v8.2-bounded-market-blend";
+const ANALYSIS_VERSION = "models-v8.3-sample-adjusted-ratings";
 const CURRENT_SEASON = new Date().getFullYear();
 const PREVIOUS_SEASON = CURRENT_SEASON - 1;
 
@@ -2187,17 +2188,18 @@ function rankOffense(lineup: BatterStat[], recentStats = new Map<string, RecentB
   if (!lineup.length) return 50;
   return average(
     lineup.map((batter) => {
-      const seasonRating = 50
+      const rawSeasonRating = 50
         + (batter.xwoba - 0.320) * 90
         + (batter.xslg - 0.420) * 30
         + (batter.xba - 0.250) * 20;
+      const seasonRating = sampleAdjustedPlayerRating(rawSeasonRating, batter.pa);
       const recent = recentStats.get(normalizeName(statDisplayName(batter["last_name, first_name"]))) || null;
       if (!recent) return seasonRating;
-      const recentRating = 50
+      const recentRating = clampPlayerRating(50
         + (recent.ops - 0.720) * 35
         + (recent.obp - 0.320) * 15
         + (recent.slg - 0.400) * 10
-        + ((recent.bbPercent - recent.kPercent) + 15) * 0.20;
+        + ((recent.bbPercent - recent.kPercent) + 15) * 0.20);
       const recentWeight = Math.min(0.38, (recent.pa / 120) * 0.38);
       return seasonRating * (1 - recentWeight) + recentRating * recentWeight;
     })
@@ -2213,18 +2215,21 @@ function rankPitchingForWin(
   const recent = recentStats.get(normalizeName(starterName)) || null;
   const fallbackEra = Number.parseFloat(starter?.era || "");
   if (!pitcher && !recent && !Number.isFinite(fallbackEra)) return 50;
-  const seasonRating = pitcher
+  const rawSeasonRating = pitcher
     ? 50
       + (0.320 - pitcher.xwoba) * 90
       + (0.420 - pitcher.xslg) * 25
       + (0.250 - pitcher.xba) * 20
     : 50 + (4.20 - (Number.isFinite(fallbackEra) ? fallbackEra : 4.20)) * 3;
+  const seasonRating = pitcher
+    ? sampleAdjustedPlayerRating(rawSeasonRating, pitcher.pa, 50, 120, 35, 80)
+    : Math.max(35, Math.min(80, rawSeasonRating));
   if (!recent) return Math.max(35, Math.min(80, seasonRating));
-  const recentRating = 50
+  const recentRating = clampPlayerRating(50
     + (4.00 - recent.era) * 3
     + (1.28 - recent.whip) * 10
     + ((recent.kPercent - recent.bbPercent) - 15) * 0.30
-    + (1.10 - recent.hrPer9) * 2;
+    + (1.10 - recent.hrPer9) * 2, 35, 80);
   const recentWeight = Math.min(0.32, (recent.battersFaced / 120) * 0.32);
   return Math.max(35, Math.min(80, seasonRating * (1 - recentWeight) + recentRating * recentWeight));
 }

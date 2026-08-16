@@ -6,6 +6,8 @@ Winner projections use the regression only after its training procedure beats th
 
 The current MLB date is excluded from recent-slate approval until the slate is complete. Individual finals can enter model training immediately, but one early result cannot evict an entire older slate or toggle production approval intraday.
 
+Player-level expected-stat ratings use a 120-PA/BF reliability prior and bounded component ratings. This prevents a debut-sized Statcast sample from overpowering eight established lineup players or a full team pitching profile while preserving most of the signal for regulars with substantial samples.
+
 Complete-slate winner requests use the primary regression. Winner recommendations can enter `best bets` only when an independently trained no-total selective regression is also approved, rates the same side at 55% or higher, and agrees with a 55%+ primary prediction. This keeps forced projections visible without treating them as equally bettable.
 
 ## Model Inputs
