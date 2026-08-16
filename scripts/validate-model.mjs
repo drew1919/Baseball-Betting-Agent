@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { buildRegressionTrainingRows, MIN_REGRESSION_DATA_QUALITY, predictHomeWinProbability, REGRESSION_FEATURE_NAMES, REGRESSION_FEATURE_VERSION, regressionTrainingEligible, trainLogisticRegression } from "../dist/regression-trainer.js";
+import { buildRegressionTrainingRows, MIN_REGRESSION_DATA_QUALITY, MIN_REGRESSION_SAMPLE, predictHomeWinProbability, REGRESSION_FEATURE_NAMES, REGRESSION_FEATURE_VERSION, regressionTrainingEligible, trainLogisticRegression } from "../dist/regression-trainer.js";
 import { evaluateHeuristicBaseline, evaluateWalkForwardRegression, QUALIFIED_CONFIDENCE_THRESHOLD } from "../dist/model-evaluator.js";
 
 const databasePath = process.argv[2] || "data/app.db";
@@ -53,7 +53,7 @@ const joined = rawRows.map((row) => ({
 
 const eligibleJoined = joined.filter(regressionTrainingEligible);
 const trainingRows = buildRegressionTrainingRows(eligibleJoined);
-const forward = evaluateWalkForwardRegression(trainingRows, 60, undefined, incompleteRecentDate);
+const forward = evaluateWalkForwardRegression(trainingRows, MIN_REGRESSION_SAMPLE, undefined, incompleteRecentDate);
 const noOddsRows = buildRegressionTrainingRows(eligibleJoined.map((row) => ({
   ...row,
   awayMoneyline: null,
@@ -61,7 +61,7 @@ const noOddsRows = buildRegressionTrainingRows(eligibleJoined.map((row) => ({
   total: null,
   marketLean: null
 })));
-const noOddsForward = evaluateWalkForwardRegression(noOddsRows, 60, undefined, incompleteRecentDate);
+const noOddsForward = evaluateWalkForwardRegression(noOddsRows, MIN_REGRESSION_SAMPLE, undefined, incompleteRecentDate);
 const testRows = forward.firstTestDate
   ? trainingRows.filter((row) => row.snapshotDate >= forward.firstTestDate)
   : [];
@@ -78,7 +78,7 @@ const noOddsDeploymentPredictions = [];
 const selectiveFeatureNames = REGRESSION_FEATURE_NAMES.filter((name) => name !== "totalValue");
 dates.forEach((date) => {
   const earlier = trainingRows.filter((row) => row.snapshotDate < date);
-  if (earlier.length < 60) return;
+  if (earlier.length < MIN_REGRESSION_SAMPLE) return;
   const model = trainLogisticRegression(earlier);
   const selectiveModel = trainLogisticRegression(earlier, selectiveFeatureNames);
   trainingRows.filter((row) => row.snapshotDate === date).forEach((row) => {
@@ -170,7 +170,8 @@ console.log(JSON.stringify({
     totalJoinedRows: joined.length,
     eligibleJoinedRows: eligibleJoined.length,
     excludedJoinedRows: joined.length - eligibleJoined.length,
-    minimumDataQuality: MIN_REGRESSION_DATA_QUALITY
+    minimumDataQuality: MIN_REGRESSION_DATA_QUALITY,
+    minimumTrainingRows: MIN_REGRESSION_SAMPLE
   },
   trainingRows: trainingRows.length,
   candidateVersion: candidate?.featureVersion || null,

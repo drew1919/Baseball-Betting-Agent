@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { clampPlayerRating, lineupAdjustedTeamRating, sampleAdjustedPlayerRating } from "../dist/rating-utils.js";
 import { shrinkProbabilityToEven, winnerEvidenceQuality } from "../dist/prediction-quality.js";
 import { evaluateFirstInningPerformance } from "../dist/first-inning-evaluator.js";
-import { regressionTrainingEligible } from "../dist/regression-trainer.js";
+import { MIN_REGRESSION_SAMPLE, regressionFeatureDiagnostics, regressionTrainingEligible, trainLogisticRegression } from "../dist/regression-trainer.js";
 
 const tinySample = sampleAdjustedPlayerRating(153.46, 4);
 assert.ok(tinySample > 50 && tinySample < 51, `expected near-average rating, received ${tinySample}`);
@@ -99,6 +99,30 @@ const slumpingFirstInning = evaluateFirstInningPerformance(
 assert.ok(slumpingFirstInning.accuracy >= 0.7);
 assert.ok(slumpingFirstInning.recentAccuracy < 0.55);
 assert.equal(slumpingFirstInning.approved, false);
+
+const regressionRows = Array.from({ length: MIN_REGRESSION_SAMPLE }, (_, index) => ({
+  offenseDiff: (index % 17) - 8,
+  pitchingDiff: ((index * 3) % 19) - 9,
+  bullpenDiff: Math.sin(index / 3),
+  trendDiff: ((index * 5) % 23) - 11,
+  winProbDiff: ((index % 17) - 8) * 2,
+  defenseDiff: Math.cos(index / 5),
+  parkDiff: ((index * 7) % 13) / 10,
+  impliedDiff: ((index * 11) % 29) / 100 - 0.14,
+  totalValue: (index % 7) / 2 - 1.5,
+  coverageDiff: 0,
+  homeWin: index % 3 === 0 ? 1 : 0
+}));
+const regressionDiagnostics = regressionFeatureDiagnostics(regressionRows);
+assert.equal(regressionDiagnostics.find((row) => row.name === "coverageDiff").selected, false);
+assert.equal(regressionDiagnostics.find((row) => row.name === "winProbDiff").selected, false);
+assert.equal(regressionDiagnostics.find((row) => row.name === "winProbDiff").redundantWith, "offenseDiff");
+assert.equal(trainLogisticRegression(regressionRows.slice(0, MIN_REGRESSION_SAMPLE - 1)), null);
+const stableRegression = trainLogisticRegression(regressionRows);
+assert.ok(stableRegression);
+assert.equal(stableRegression.trainingSampleSize, MIN_REGRESSION_SAMPLE);
+assert.ok(!stableRegression.featureNames.includes("coverageDiff"));
+assert.ok(!stableRegression.featureNames.includes("winProbDiff"));
 
 const originalCwd = process.cwd();
 const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "mlb-feature-store-"));
