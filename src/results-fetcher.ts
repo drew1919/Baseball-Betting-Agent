@@ -1,4 +1,5 @@
 import type { WinnerResultRow } from "./regression-types.js";
+import type { FirstInningResultRow } from "./first-inning-types.js";
 
 export type WinnerGameStatus = {
   date: string;
@@ -13,6 +14,7 @@ export type WinnerGameStatus = {
 
 export type WinnerScoreboard = {
   results: WinnerResultRow[];
+  firstInningResults: FirstInningResultRow[];
   statuses: WinnerGameStatus[];
 };
 
@@ -76,7 +78,7 @@ export function buildWinnerGameId(date: string, away: string, home: string) {
 }
 
 export async function fetchWinnerScoreboard(startDate: string, endDate: string): Promise<WinnerScoreboard> {
-  const res = await fetch(`https://statsapi.mlb.com/api/v1/schedule?sportId=1&gameType=R&startDate=${startDate}&endDate=${endDate}`, {
+  const res = await fetch(`https://statsapi.mlb.com/api/v1/schedule?sportId=1&gameType=R&startDate=${startDate}&endDate=${endDate}&hydrate=linescore`, {
     headers: {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
     }
@@ -95,11 +97,19 @@ export async function fetchWinnerScoreboard(startDate: string, endDate: string):
           away?: { team?: { name?: string }; score?: number };
           home?: { team?: { name?: string }; score?: number };
         };
+        linescore?: {
+          innings?: Array<{
+            num?: number;
+            away?: { runs?: number };
+            home?: { runs?: number };
+          }>;
+        };
       }>;
     }>;
   };
 
   const rows: WinnerResultRow[] = [];
+  const firstInningRows: FirstInningResultRow[] = [];
   const statuses: WinnerGameStatus[] = [];
   (data.dates || []).forEach((dateEntry) => {
     const gameDate = cleanText(dateEntry.date || "");
@@ -132,10 +142,24 @@ export async function fetchWinnerScoreboard(startDate: string, endDate: string):
         homeScore,
         homeWin: homeScore > awayScore ? 1 : 0
       });
+      const firstInning = (game.linescore?.innings || []).find((inning) => inning.num === 1);
+      const awayFirstRuns = firstInning?.away?.runs;
+      const homeFirstRuns = firstInning?.home?.runs;
+      if (Number.isFinite(awayFirstRuns) && Number.isFinite(homeFirstRuns)) {
+        firstInningRows.push({
+          date: gameDate,
+          gameId,
+          away,
+          home,
+          awayFirstRuns: Number(awayFirstRuns),
+          homeFirstRuns: Number(homeFirstRuns),
+          nrfiHit: Number(awayFirstRuns) === 0 && Number(homeFirstRuns) === 0 ? 1 : 0
+        });
+      }
     });
   });
 
-  return { results: rows, statuses };
+  return { results: rows, firstInningResults: firstInningRows, statuses };
 }
 
 export async function fetchWinnerResults(startDate: string, endDate: string) {

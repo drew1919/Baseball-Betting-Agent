@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { LogisticRegressionModel, RegressionReport, WinnerFeatureSnapshot, WinnerResultRow } from "./regression-types.js";
+import type { FirstInningFeatureSnapshot, FirstInningResultRow } from "./first-inning-types.js";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const DB_FILE = path.join(DATA_DIR, "app.db");
@@ -81,6 +82,31 @@ function initDatabase() {
       away_score INTEGER NOT NULL,
       home_score INTEGER NOT NULL,
       home_win INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS first_inning_feature_snapshots (
+      game_id TEXT PRIMARY KEY,
+      snapshot_date TEXT NOT NULL,
+      away TEXT NOT NULL,
+      home TEXT NOT NULL,
+      away_half_score REAL NOT NULL,
+      home_half_score REAL NOT NULL,
+      nrfi_score REAL NOT NULL,
+      pick TEXT NOT NULL,
+      pick_score REAL NOT NULL,
+      total REAL,
+      data_quality REAL NOT NULL,
+      analysis_version TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS first_inning_results (
+      game_id TEXT PRIMARY KEY,
+      date TEXT NOT NULL,
+      away TEXT NOT NULL,
+      home TEXT NOT NULL,
+      away_first_runs INTEGER NOT NULL,
+      home_first_runs INTEGER NOT NULL,
+      nrfi_hit INTEGER NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS artifacts (
@@ -380,6 +406,95 @@ export function writeCandidateRegressionModel(model: LogisticRegressionModel) {
   writeArtifactToDatabase(database, "regression-candidate", model);
 }
 
+function mapFirstInningFeatureRow(row: Record<string, unknown>): FirstInningFeatureSnapshot {
+  return {
+    gameId: String(row.game_id),
+    snapshotDate: String(row.snapshot_date),
+    away: String(row.away),
+    home: String(row.home),
+    awayHalfScore: Number(row.away_half_score),
+    homeHalfScore: Number(row.home_half_score),
+    nrfiScore: Number(row.nrfi_score),
+    pick: String(row.pick) as FirstInningFeatureSnapshot["pick"],
+    pickScore: Number(row.pick_score),
+    total: row.total === null || row.total === undefined ? null : Number(row.total),
+    dataQuality: Number(row.data_quality),
+    analysisVersion: String(row.analysis_version)
+  };
+}
+
+function mapFirstInningResultRow(row: Record<string, unknown>): FirstInningResultRow {
+  return {
+    gameId: String(row.game_id),
+    date: String(row.date),
+    away: String(row.away),
+    home: String(row.home),
+    awayFirstRuns: Number(row.away_first_runs),
+    homeFirstRuns: Number(row.home_first_runs),
+    nrfiHit: Number(row.nrfi_hit) as 0 | 1
+  };
+}
+
+export function readFirstInningFeatureSnapshots() {
+  return (database.prepare("SELECT * FROM first_inning_feature_snapshots ORDER BY snapshot_date ASC, game_id ASC").all() as Record<string, unknown>[])
+    .map(mapFirstInningFeatureRow);
+}
+
+export function readFirstInningResults() {
+  return (database.prepare("SELECT * FROM first_inning_results ORDER BY date ASC, game_id ASC").all() as Record<string, unknown>[])
+    .map(mapFirstInningResultRow);
+}
+
+export function upsertFirstInningFeatureSnapshots(rows: FirstInningFeatureSnapshot[]) {
+  const statement = database.prepare(`
+    INSERT INTO first_inning_feature_snapshots (
+      game_id, snapshot_date, away, home, away_half_score, home_half_score,
+      nrfi_score, pick, pick_score, total, data_quality, analysis_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(game_id) DO NOTHING
+  `);
+  database.exec("BEGIN");
+  try {
+    for (const row of rows) {
+      statement.run(
+        row.gameId, row.snapshotDate, row.away, row.home, row.awayHalfScore, row.homeHalfScore,
+        row.nrfiScore, row.pick, row.pickScore, row.total, row.dataQuality, row.analysisVersion
+      );
+    }
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+  return readFirstInningFeatureSnapshots();
+}
+
+export function upsertFirstInningResults(rows: FirstInningResultRow[]) {
+  const statement = database.prepare(`
+    INSERT INTO first_inning_results (
+      game_id, date, away, home, away_first_runs, home_first_runs, nrfi_hit
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(game_id) DO UPDATE SET
+      date = excluded.date,
+      away = excluded.away,
+      home = excluded.home,
+      away_first_runs = excluded.away_first_runs,
+      home_first_runs = excluded.home_first_runs,
+      nrfi_hit = excluded.nrfi_hit
+  `);
+  database.exec("BEGIN");
+  try {
+    for (const row of rows) {
+      statement.run(row.gameId, row.date, row.away, row.home, row.awayFirstRuns, row.homeFirstRuns, row.nrfiHit);
+    }
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+  return readFirstInningResults();
+}
+
 export function readProductionSelectiveRegressionModel() {
   return readArtifact<LogisticRegressionModel>("regression-selective-production");
 }
@@ -406,6 +521,8 @@ export function getStorageStatus() {
     dbPath: DB_FILE,
     featureRows: countRows(database, "winner_feature_snapshots"),
     resultRows: countRows(database, "winner_results"),
+    firstInningFeatureRows: countRows(database, "first_inning_feature_snapshots"),
+    firstInningResultRows: countRows(database, "first_inning_results"),
     artifactRows: countRows(database, "artifacts")
   };
 }

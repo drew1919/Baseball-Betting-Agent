@@ -12,6 +12,8 @@ Missing lineup slots are scored at a neutral 50 rather than allowing a partial l
 
 Complete-slate winner requests use the primary regression. Winner recommendations can enter `best bets` only when an independently trained no-total selective regression is also approved, rates the same side at 55% or higher, and agrees with a 55%+ primary prediction. This keeps forced projections visible without treating them as equally bettable.
 
+NRFI/YRFI uses both halves of inning one: the away offense against the home starter and the home offense against the away starter. Its displayed number is a model ranking score, not a probability. Pregame first-inning snapshots and official MLB inning-one results are stored separately from winner history. First-inning accuracy is not approved until at least 30 prospective games reach 55% overall accuracy, at least 15 high-quality/clear-edge games reach 60%, and the latest five slates remain at or above 55%. Before approval, the app still returns NRFI/YRFI watchlist leans. Even after the accuracy gate passes, an actual first-inning market price is required before a play can enter `best bets`, because hit rate alone does not establish positive expected value.
+
 ## Model Inputs
 
 The August winner heuristic uses this 100% core weighting:
@@ -86,7 +88,7 @@ Run `npm run validate:model -- data/app.db` to evaluate the primary and selectiv
 
 ## Persistent Data
 
-The ignored `data/` directory contains the SQLite database and regenerated source files. `data/app.db` is the source of truth for historical feature snapshots, results, and model artifacts. Each new snapshot stores the raw statistical lean separately from the final prediction, confidence, engine, and market weight so later evaluation does not conflate those concepts. Keep this directory on persistent Oracle storage and back it up before server migrations.
+The ignored `data/` directory contains the SQLite database and regenerated source files. `data/app.db` is the source of truth for winner and first-inning feature snapshots, official results, and model artifacts. Each new snapshot stores the raw statistical lean separately from the final prediction, confidence, engine, and market weight so later evaluation does not conflate those concepts. Keep this directory on persistent Oracle storage and back it up before server migrations.
 
 ## API Endpoints
 
@@ -102,6 +104,8 @@ The ignored `data/` directory contains the SQLite database and regenerated sourc
 | `POST /api/data/refresh` | Manually run the full data refresh |
 | `POST /api/regression/refresh` | Refresh results and train/evaluate a candidate model |
 | `GET /api/regression/report` | Regression metrics and feature coverage |
+| `GET /api/recommendations/history` | Winner picks, evidence quality, results, and accuracy |
+| `GET /api/first-inning/history` | NRFI/YRFI snapshots, official first-inning results, accuracy, and approval status |
 
 ## Primary Sources
 
