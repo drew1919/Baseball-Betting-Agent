@@ -13,7 +13,7 @@ import { evaluateHeuristicBaseline, evaluateRegressionModel, evaluateWalkForward
 import type { RegressionReport, WinnerFeatureSnapshot } from "./regression-types.js";
 import { clampPlayerRating, lineupAdjustedTeamRating, sampleAdjustedPlayerRating } from "./rating-utils.js";
 import { shrinkProbabilityToEven, winnerEvidenceQuality } from "./prediction-quality.js";
-import type { FirstInningFeatureSnapshot, FirstInningPerformance } from "./first-inning-types.js";
+import type { FirstInningFeatureSnapshot, FirstInningPerformance, FirstInningPick } from "./first-inning-types.js";
 import { evaluateFirstInningPerformance } from "./first-inning-evaluator.js";
 
 dotenv.config();
@@ -2215,6 +2215,24 @@ function rankOffense(lineup: BatterStat[], recentStats = new Map<string, RecentB
   );
 }
 
+async function firstInningProjection(game: MatchedGameContext) {
+  const halves = await combinedNrfiScore(game);
+  const total = game.rotowireTotal;
+  const totalAdjustment = total !== null ? (total <= 7.5 ? 3 : total >= 9 ? -3 : 0) : 0;
+  const nrfiScore = halves.combined + totalAdjustment;
+  const pick: FirstInningPick = nrfiScore >= 58 ? "NRFI" : "YRFI";
+  return {
+    ...halves,
+    rawCombinedScore: halves.combined,
+    total,
+    totalAdjustment,
+    nrfiScore,
+    pick,
+    pickScore: pick === "NRFI" ? nrfiScore : 70 - nrfiScore,
+    dataQuality: firstInningDataQuality(game, total)
+  };
+}
+
 function messageMentionsTeam(message: string, team: string) {
   const normalized = ` ${normalizeName(message)} `;
   const teamKey = resolveTeamKey(team);
@@ -2702,23 +2720,19 @@ async function buildFirstInningFeatureSnapshot(
   game: MatchedGameContext,
   snapshotDate: string
 ): Promise<FirstInningFeatureSnapshot> {
-  const nrfi = await combinedNrfiScore(game);
-  const total = game.rotowireTotal;
-  const totalAdjustment = total !== null ? (total <= 7.5 ? 3 : total >= 9 ? -3 : 0) : 0;
-  const nrfiScore = nrfi.combined + totalAdjustment;
-  const pick = nrfiScore >= 58 ? "NRFI" : "YRFI";
+  const projection = await firstInningProjection(game);
   return {
     gameId: buildWinnerGameId(snapshotDate, game.away, game.home),
     snapshotDate,
     away: game.away,
     home: game.home,
-    awayHalfScore: nrfi.awayHalf,
-    homeHalfScore: nrfi.homeHalf,
-    nrfiScore,
-    pick,
-    pickScore: pick === "NRFI" ? nrfiScore : 70 - nrfiScore,
-    total,
-    dataQuality: firstInningDataQuality(game, total),
+    awayHalfScore: projection.awayHalf,
+    homeHalfScore: projection.homeHalf,
+    nrfiScore: projection.nrfiScore,
+    pick: projection.pick,
+    pickScore: projection.pickScore,
+    total: projection.total,
+    dataQuality: projection.dataQuality,
     analysisVersion: ANALYSIS_VERSION
   };
 }
@@ -3001,16 +3015,16 @@ function scheduleMorningRefresh() {
 }
 
 async function chooseBestGeneralBet(game: MatchedGameContext) {
-  const nrfi = await combinedNrfiScore(game);
+  const firstInning = await firstInningProjection(game);
   const winnerBreakdown = await buildWinnerBreakdown(game);
   const winner = winnerPrediction(game, winnerBreakdown);
   const firstInningReport = firstInningPerformance();
   const winnerEdge = winner.probabilityEdge;
-  const total = winnerBreakdown.odds?.total ?? null;
-  const nrfiModelScore = nrfi.combined + (total !== null ? (total <= 7.5 ? 3 : total >= 9 ? -3 : 0) : 0);
-  const firstInningPick = nrfiModelScore >= 58 ? "NRFI" : "YRFI";
-  const firstInningModelScore = firstInningPick === "NRFI" ? nrfiModelScore : 70 - nrfiModelScore;
-  const firstInningQuality = firstInningDataQuality(game, total);
+  const total = firstInning.total;
+  const nrfiModelScore = firstInning.nrfiScore;
+  const firstInningPick = firstInning.pick;
+  const firstInningModelScore = firstInning.pickScore;
+  const firstInningQuality = firstInning.dataQuality;
   const firstInningPriceAvailable = false;
   const firstInningQualified = firstInningPriceAvailable
     && firstInningReport.approved
@@ -3085,19 +3099,19 @@ function analyzePitcherNrfi(pitcher: PitcherStat, offense: BatterStat[], teamLab
 }
 
 async function analyzeFullInningNrfi(game: MatchedGameContext) {
-  const nrfi = await combinedNrfiScore(game);
-  const pick = nrfi.combined >= 58 ? "NRFI" : "YRFI";
+  const projection = await firstInningProjection(game);
+  const pick = projection.pick;
   const report = firstInningPerformance();
 
   return [
     `**${game.away} @ ${game.home} NRFI/YRFI outlook**`,
-    `${game.away} first-inning scoring threat vs ${game.homePitcher ? statDisplayName(game.homePitcher["last_name, first_name"]) : game.home + " starter"}: **${formatNumber(nrfi.awayHalf)}**.`,
-    `${game.home} first-inning scoring threat vs ${game.awayPitcher ? statDisplayName(game.awayPitcher["last_name, first_name"]) : game.away + " starter"}: **${formatNumber(nrfi.homeHalf)}**.`,
-    `Combined first-inning model score: **${formatNumber(nrfi.combined)}**. This is a ranking score, not a win probability.`,
+    `${game.away} first-inning scoring threat vs ${game.homePitcher ? statDisplayName(game.homePitcher["last_name, first_name"]) : game.home + " starter"}: **${formatNumber(projection.awayHalf)}**.`,
+    `${game.home} first-inning scoring threat vs ${game.awayPitcher ? statDisplayName(game.awayPitcher["last_name, first_name"]) : game.away + " starter"}: **${formatNumber(projection.homeHalf)}**.`,
+    `Combined first-inning model score: **${formatNumber(projection.nrfiScore)}**${projection.totalAdjustment ? ` (raw **${formatNumber(projection.rawCombinedScore)}**, adjusted **${projection.totalAdjustment > 0 ? "+" : ""}${formatNumber(projection.totalAdjustment)}** for the **${formatNumber(projection.total || 0, 1)}** game total)` : ""}. This is a ranking score, not a win probability.`,
     "NRFI requires both the top half and the bottom half to stay scoreless, so this recommendation is combining both sides of the inning instead of grading only one pitcher.",
     `Prospective validation: **${report.gradedCount}** graded, **${report.accuracy === null ? "n/a" : formatNumber(report.accuracy * 100) + "%"}** accuracy; accuracy approval is **${report.approved ? "active" : "not active"}**. An offered price is still required to determine betting value.`,
-    `${nrfi.awayHalf >= 58 && nrfi.homeHalf >= 58 ? "Both halves clear the bar for a cleaner first inning." : "One side of the inning is introducing enough run risk to weaken the full NRFI case."}`,
-    `${recommendation(nrfi.combined, 62, 54)} Recommendation: **${pick}**. ${pick === "NRFI" ? "Both halves are strong enough to back a scoreless full first inning." : "The full first inning is too vulnerable, so YRFI is the better side."}`
+    `${projection.awayHalf >= 58 && projection.homeHalf >= 58 ? "Both halves clear the bar for a cleaner first inning." : "One side of the inning is introducing enough run risk to weaken the full NRFI case."}`,
+    `${recommendation(projection.nrfiScore, 62, 54)} Recommendation: **${pick}**. ${pick === "NRFI" ? "Both halves are strong enough to back a scoreless full first inning." : "The full first inning is too vulnerable, so YRFI is the better side."}`
   ].join("\n\n");
 }
 
@@ -3174,15 +3188,15 @@ async function topNrfiGamesFromSlate() {
     const payload = await loadDailyLineups();
     const ranked = (await Promise.all(payload.games.map(async (game) => {
         const matched = matchGameCard(game);
-        const nrfi = await combinedNrfiScore(matched);
+        const projection = await firstInningProjection(matched);
         return {
           game,
           matched,
-          nrfi
+          projection
         };
       })))
       .filter(({ matched }) => matched.awayPitcher || matched.homePitcher || matched.awayBatters.length || matched.homeBatters.length)
-      .sort((a, b) => b.nrfi.combined - a.nrfi.combined)
+      .sort((a, b) => b.projection.nrfiScore - a.projection.nrfiScore)
       .slice(0, 5);
 
     if (!ranked.length) {
@@ -3196,11 +3210,10 @@ async function topNrfiGamesFromSlate() {
     return [
       "**Best NRFI/YRFI games today**",
       `First-inning recommendations are currently **${firstInningPerformance().approved ? "prospectively approved" : "watchlist-only while results accumulate"}**. Scores below are ranking scores, not probabilities.`,
-      ...ranked.map(({ matched, nrfi }, index) => {
-        const pick = nrfi.combined >= 58 ? "NRFI" : "YRFI";
-        return `${index + 1}. **${matched.away} @ ${matched.home}**: top half **${formatNumber(nrfi.awayHalf)}**, bottom half **${formatNumber(nrfi.homeHalf)}**, combined model score **${formatNumber(nrfi.combined)}**. Lean: **${pick}**.`;
+      ...ranked.map(({ matched, projection }, index) => {
+        return `${index + 1}. **${matched.away} @ ${matched.home}**: top half **${formatNumber(projection.awayHalf)}**, bottom half **${formatNumber(projection.homeHalf)}**, combined model score **${formatNumber(projection.nrfiScore)}**. Lean: **${projection.pick}**.`;
       }),
-      `${recommendation(ranked[0].nrfi.combined, 62, 54)} Recommendation: **${ranked[0].nrfi.combined >= 58 ? "NRFI" : "YRFI"} on ${ranked[0].matched.away} @ ${ranked[0].matched.home}** is the strongest full first-inning angle from the live slate.`
+      `${recommendation(ranked[0].projection.nrfiScore, 62, 54)} Recommendation: **${ranked[0].projection.pick} on ${ranked[0].matched.away} @ ${ranked[0].matched.home}** is the strongest full first-inning angle from the live slate.`
     ].join("\n\n");
   } catch (error) {
     return [
