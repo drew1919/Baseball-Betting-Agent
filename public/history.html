@@ -276,13 +276,13 @@
 
     <div class="scoreboard" id="scoreboard">
       <div class="score-block away">
-        <div class="score-label">Model pick</div>
+        <div class="score-label" id="modelLabel">Prospective model</div>
         <div class="score-digits" id="heuristicAccuracy">—</div>
         <div class="score-sub" id="heuristicSub">no data yet</div>
       </div>
       <div class="vs">VS</div>
       <div class="score-block home">
-        <div class="score-label">Market lean</div>
+        <div class="score-label" id="marketLabel">Prospective market lean</div>
         <div class="score-digits market" id="marketAccuracy">—</div>
         <div class="score-sub" id="marketSub">no data yet</div>
       </div>
@@ -298,7 +298,7 @@
             <th>Result</th>
             <th>Final</th>
             <th>Edge</th>
-            <th>Conf.</th>
+            <th>Prob. / score</th>
             <th>Market</th>
           </tr>
         </thead>
@@ -311,7 +311,7 @@
       </div>
     </div>
 
-    <footer>Grading uses immutable pregame picks versus official final scores. Stale slate rows are excluded, and regression candidates must pass rolling forward validation before promotion.</footer>
+    <footer>Prospective accuracy begins with versioned immutable snapshots. Legacy rows remain visible for accountability, but their historical strength score is not treated as probability confidence.</footer>
   </div>
 
 <script>
@@ -357,6 +357,14 @@
         : `<span class="market-cell disagree">${game.marketLean}</span>`
       : `<span class="market-cell disagree">—</span>`;
 
+    const confidenceCell = game.confidenceKind === 'legacy-strength-score'
+      ? game.legacyStrengthScore !== null && game.legacyStrengthScore !== undefined
+        ? `legacy ${game.legacyStrengthScore.toFixed(1)}`
+        : 'legacy'
+      : game.confidence !== null && game.confidence !== undefined
+        ? `${game.confidence.toFixed(0)}%`
+        : '—';
+
     tr.innerHTML = `
       <td class="date-cell">${game.date}</td>
       <td class="matchup">${game.away}<span class="at">@</span>${game.home}</td>
@@ -364,7 +372,7 @@
       <td>${resultBadge}</td>
       <td class="num-cell">${finalScore}</td>
       <td class="num-cell">${game.edge !== null && game.edge !== undefined ? game.edge.toFixed(1) : '—'}</td>
-      <td class="num-cell">${game.confidence !== null && game.confidence !== undefined ? game.confidence.toFixed(0) : '—'}</td>
+      <td class="num-cell">${confidenceCell}</td>
       <td>${marketCell}</td>
     `;
     return tr;
@@ -386,15 +394,21 @@
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || 'Failed to load');
 
-      document.getElementById('heuristicAccuracy').textContent = fmtPct(data.summary.accuracy);
-      document.getElementById('heuristicSub').textContent =
-        data.summary.gradedCount
-          ? `${data.summary.correctCount}/${data.summary.gradedCount} graded · ${data.summary.liveCount || 0} live · ${data.summary.pendingCount} pending · ${data.summary.staleCount || 0} stale excluded`
-          : `no graded picks yet · ${data.summary.liveCount || 0} live · ${data.summary.pendingCount} pending · ${data.summary.staleCount || 0} stale excluded`;
+      const prospective = data.summary.prospective;
+      const legacy = data.summary.legacy;
+      document.getElementById('heuristicAccuracy').textContent = fmtPct(prospective.accuracy);
+      document.getElementById('heuristicSub').textContent = prospective.gradedCount
+        ? `${prospective.correctCount}/${prospective.gradedCount} prospective graded · ${data.summary.liveCount || 0} live · ${data.summary.pendingCount} pending`
+        : `awaiting prospective results · legacy ${legacy.correctCount}/${legacy.gradedCount} at ${fmtPct(legacy.accuracy)}`;
 
-      document.getElementById('marketAccuracy').textContent = fmtPct(data.summary.marketAccuracy);
-      document.getElementById('marketSub').textContent =
-        data.summary.marketGradedCount ? `${data.summary.marketCorrectCount}/${data.summary.marketGradedCount} graded` : 'no odds data yet';
+      const marketSummary = prospective.marketGradedCount ? prospective : data.summary;
+      document.getElementById('marketLabel').textContent = prospective.marketGradedCount
+        ? 'Prospective market lean'
+        : 'Historical market lean';
+      document.getElementById('marketAccuracy').textContent = fmtPct(marketSummary.marketAccuracy);
+      document.getElementById('marketSub').textContent = marketSummary.marketGradedCount
+        ? `${marketSummary.marketCorrectCount}/${marketSummary.marketGradedCount} graded`
+        : 'no odds data yet';
 
       body.innerHTML = '';
       if (!data.games.length) {

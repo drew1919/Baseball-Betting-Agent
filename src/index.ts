@@ -3724,6 +3724,8 @@ app.get("/api/recommendations/history", async (req, res) => {
           && currentStatus?.homeScore !== null && currentStatus?.homeScore !== undefined
           ? `${currentStatus.awayScore}-${currentStatus.homeScore}`
           : null;
+      const analysisVersion = snapshot.analysisVersion || "legacy";
+      const legacySnapshot = analysisVersion === "legacy" || snapshot.predictionMethod === "legacy snapshot";
       return {
         date: snapshot.snapshotDate,
         gameId: snapshot.gameId,
@@ -3737,13 +3739,15 @@ app.get("/api/recommendations/history", async (req, res) => {
         finalScore: displayedScore,
         gameStateDetail: currentStatus?.detailedState || null,
         edge: snapshot.heuristicEdge,
-        confidence: snapshot.predictionConfidence ?? snapshot.heuristicConfidence,
+        confidence: legacySnapshot ? null : snapshot.predictionConfidence ?? snapshot.heuristicConfidence,
+        legacyStrengthScore: legacySnapshot ? snapshot.heuristicConfidence : null,
+        confidenceKind: legacySnapshot ? "legacy-strength-score" : "pick-probability",
         predictionMethod: snapshot.predictionMethod || "legacy snapshot",
         marketWeight: snapshot.marketWeight ?? null,
         marketLean: snapshot.marketLean,
         dataQuality: snapshot.dataQuality ?? null,
         dataQualityNotes: snapshot.dataQualityNotes ?? [],
-        analysisVersion: snapshot.analysisVersion || "legacy"
+        analysisVersion
       };
     })
     .sort((a, b) => b.date.localeCompare(a.date) || a.gameId.localeCompare(b.gameId));
@@ -3763,6 +3767,21 @@ app.get("/api/recommendations/history", async (req, res) => {
     ...group,
     accuracy: group.gradedCount ? group.correctCount / group.gradedCount : null
   }));
+  const cohortSummary = (cohortGames: typeof graded) => {
+    const cohortCorrect = cohortGames.filter((game) => game.correct).length;
+    const cohortMarket = cohortGames.filter((game) => game.marketLean);
+    const cohortMarketCorrect = cohortMarket.filter((game) => game.marketLean === game.actualWinner).length;
+    return {
+      gradedCount: cohortGames.length,
+      correctCount: cohortCorrect,
+      accuracy: cohortGames.length ? cohortCorrect / cohortGames.length : null,
+      marketGradedCount: cohortMarket.length,
+      marketCorrectCount: cohortMarketCorrect,
+      marketAccuracy: cohortMarket.length ? cohortMarketCorrect / cohortMarket.length : null
+    };
+  };
+  const prospectiveGraded = graded.filter((game) => game.analysisVersion !== "legacy");
+  const legacyGraded = graded.filter((game) => game.analysisVersion === "legacy");
 
   res.json({
     ok: true,
@@ -3779,6 +3798,8 @@ app.get("/api/recommendations/history", async (req, res) => {
       marketGradedCount: marketGraded.length,
       marketCorrectCount,
       marketAccuracy: marketGraded.length ? marketCorrectCount / marketGraded.length : null,
+      prospective: cohortSummary(prospectiveGraded),
+      legacy: cohortSummary(legacyGraded),
       byAnalysisVersion
     },
     games
