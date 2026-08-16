@@ -3489,6 +3489,13 @@ app.get("/api/recommendations/history", async (req, res) => {
 
   const results = readWinnerResults();
   const resultsByGameId = new Map(results.map((result) => [result.gameId, result]));
+  const resultsByMatchup = results.reduce<Map<string, typeof results>>((groups, result) => {
+    const key = `${result.away}_${result.home}`;
+    const matchupResults = groups.get(key) || [];
+    matchupResults.push(result);
+    groups.set(key, matchupResults);
+    return groups;
+  }, new Map());
   const statusesByGameId = new Map((recentScoreboard?.statuses || []).map((status) => [status.gameId, status]));
 
   const games = readWinnerFeatureSnapshots()
@@ -3501,6 +3508,16 @@ app.get("/api/recommendations/history", async (req, res) => {
       const snapshotTime = Date.parse(`${snapshot.snapshotDate}T00:00:00Z`);
       const currentStatus = statusesByGameId.get(snapshot.gameId) || null;
       const isPast = snapshotTime < todayTime;
+      const nearbyResult = !exactResult && isPast
+        ? (resultsByMatchup.get(`${snapshot.away}_${snapshot.home}`) || [])
+          .map((result) => ({
+            result,
+            distanceDays: Math.abs(Date.parse(`${result.date}T00:00:00Z`) - snapshotTime) / 86_400_000
+          }))
+          .filter((candidate) => candidate.distanceDays <= 7)
+          .sort((a, b) => a.distanceDays - b.distanceDays || b.result.date.localeCompare(a.result.date))[0]?.result || null
+        : null;
+      const displayedResult = exactResult || nearbyResult;
       const status = exactResult
         ? "graded"
         : currentStatus?.state === "live"
@@ -3510,9 +3527,9 @@ app.get("/api/recommendations/history", async (req, res) => {
             : isPast
               ? "stale"
               : "pending";
-      const actualWinner = exactResult ? (exactResult.homeWin ? exactResult.home : exactResult.away) : null;
-      const displayedScore = exactResult
-        ? `${exactResult.awayScore}-${exactResult.homeScore}`
+      const actualWinner = displayedResult ? (displayedResult.homeWin ? displayedResult.home : displayedResult.away) : null;
+      const displayedScore = displayedResult
+        ? `${displayedResult.awayScore}-${displayedResult.homeScore}`
         : currentStatus?.state === "live"
           && currentStatus.awayScore !== null && currentStatus.awayScore !== undefined
           && currentStatus?.homeScore !== null && currentStatus?.homeScore !== undefined
@@ -3527,7 +3544,7 @@ app.get("/api/recommendations/history", async (req, res) => {
         status,
         correct: exactResult ? snapshot.heuristicPick === actualWinner : null,
         actualWinner,
-        resultDate: exactResult?.date || null,
+        resultDate: displayedResult?.date || null,
         finalScore: displayedScore,
         gameStateDetail: currentStatus?.detailedState || null,
         edge: snapshot.heuristicEdge,
