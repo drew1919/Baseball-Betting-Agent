@@ -8,6 +8,7 @@ import { shrinkProbabilityToEven, winnerEvidenceQuality } from "../dist/predicti
 import { evaluateFirstInningPerformance } from "../dist/first-inning-evaluator.js";
 import { MIN_REGRESSION_SAMPLE, regressionFeatureDiagnostics, regressionTrainingEligible, trainLogisticRegression } from "../dist/regression-trainer.js";
 import { buildWinnerGameId, fetchWinnerScoreboard } from "../dist/results-fetcher.js";
+import { parsePlausibleAmericanMoneyline } from "../dist/odds-utils.js";
 
 const tinySample = sampleAdjustedPlayerRating(153.46, 4);
 assert.ok(tinySample > 50 && tinySample < 51, `expected near-average rating, received ${tinySample}`);
@@ -74,6 +75,16 @@ const oneSidedThinEvidence = winnerEvidenceQuality({
   lineupsConfirmed: true
 });
 assert.ok(oneSidedThinEvidence.notes.includes("partial lineup coverage"));
+
+assert.deepEqual(parsePlausibleAmericanMoneyline("ATL -145"), {
+  team: "ATL",
+  price: -145,
+  text: "ATL -145"
+});
+assert.equal(parsePlausibleAmericanMoneyline("BAL -1981"), null);
+assert.equal(parsePlausibleAmericanMoneyline("BAL -1150"), null);
+assert.equal(parsePlausibleAmericanMoneyline("BAL -99"), null);
+assert.equal(parsePlausibleAmericanMoneyline("BAL 145"), null);
 
 function firstInningRows(totalGames, correctnessForIndex) {
   const snapshots = [];

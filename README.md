@@ -8,6 +8,8 @@ Regression training accepts only versioned, non-legacy snapshots with modern pro
 
 MLB `gamePk` identifiers are attached to live lineup cards. Ordinary games retain the historical `date_away_home` key, while repeated same-day matchups append `gamePk`; this prevents doubleheader starters, lineups, predictions, and results from being collapsed into one record. Schedule times are normalized to Eastern time before RotoWire cards are matched to official games.
 
+The RotoWire one-sided moneyline fallback prefers its FanDuel value and accepts only signed American prices from `100` through `500` in magnitude for a team in that matchup. Malformed, concatenated, or extreme fallback values are omitted and receive no market weight rather than distorting the statistical prediction.
+
 The current MLB date is excluded from recent-slate approval until the slate is complete. Individual finals can enter model training immediately, but one early result cannot evict an entire older slate or toggle production approval intraday.
 
 Player-level expected-stat ratings use a 120-PA/BF reliability prior and bounded component ratings. This prevents a debut-sized Statcast sample from overpowering eight established lineup players or a full team pitching profile while preserving most of the signal for regulars with substantial samples.
@@ -77,7 +79,7 @@ The analysis engine runs without API keys. When primary two-sided odds are unava
 ## Refresh Behavior
 
 - A full refresh runs at startup and daily at 09:05 America/New_York by default. Set `MORNING_REFRESH_TIME_ZONE` and `MORNING_REFRESH_HOUR` to override it.
-- RotoWire lineups are polled every ten minutes. Immutable winner and first-inning snapshots are created only after both batting orders are confirmed and MLB still reports the game as scheduled.
+- RotoWire lineups are polled immediately after startup refresh and every ten minutes thereafter. Immutable winner and first-inning snapshots are created only after both batting orders are confirmed and MLB still reports the game as scheduled.
 - `/api/chat` triggers a guarded refresh when model data is older than eight hours or expected-stat CSVs are stale.
 - Failed refreshes are throttled and retain the last known-good files.
 - Expected-stat files are validated for minimum coverage and replaced atomically; empty scraper output cannot overwrite good data.
