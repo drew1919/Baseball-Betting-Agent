@@ -48,6 +48,8 @@ export function regressionTrainingEligible(row: WinnerFeatureSnapshot) {
     && row.analysisVersion !== "legacy"
     && row.predictionMethod
     && row.predictionMethod !== "legacy snapshot"
+    && Array.isArray(row.dataQualityNotes)
+    && !row.dataQualityNotes.some((note) => /projected rather than confirmed/i.test(note))
     && Number.isFinite(row.dataQuality)
     && (row.dataQuality as number) >= MIN_REGRESSION_DATA_QUALITY
     && finiteFeatures.every(Number.isFinite)

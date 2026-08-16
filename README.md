@@ -75,11 +75,12 @@ The analysis engine runs without API keys. When primary two-sided odds are unava
 ## Refresh Behavior
 
 - A full refresh runs at startup and daily at 09:05 America/New_York by default. Set `MORNING_REFRESH_TIME_ZONE` and `MORNING_REFRESH_HOUR` to override it.
+- RotoWire lineups are polled every ten minutes. Immutable winner and first-inning snapshots are created only after both batting orders are confirmed and MLB still reports the game as scheduled.
 - `/api/chat` triggers a guarded refresh when model data is older than eight hours or expected-stat CSVs are stale.
 - Failed refreshes are throttled and retain the last known-good files.
 - Expected-stat files are validated for minimum coverage and replaced atomically; empty scraper output cannot overwrite good data.
 - Source attempts, successes, row counts, errors, ages, and stale flags are exposed through `/api/health`.
-- The first pregame feature snapshot for a matchup/date is immutable. Page loads and later refreshes cannot rewrite history with in-game or postgame data.
+- The first confirmed-lineup pregame feature snapshot for a matchup/date is immutable. Page loads and later refreshes cannot rewrite history with in-game or postgame data.
 - First-time snapshots are created only while MLB reports a game as scheduled. Once play begins, winner analysis keeps the immutable pregame pick and market input rather than consuming moving in-game lines.
 
 The scheduler is timezone-explicit, so the Oracle VM's operating-system timezone no longer changes the capture time.
