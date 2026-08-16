@@ -7,6 +7,7 @@ import { clampPlayerRating, lineupAdjustedTeamRating, sampleAdjustedPlayerRating
 import { shrinkProbabilityToEven, winnerEvidenceQuality } from "../dist/prediction-quality.js";
 import { evaluateFirstInningPerformance } from "../dist/first-inning-evaluator.js";
 import { MIN_REGRESSION_SAMPLE, regressionFeatureDiagnostics, regressionTrainingEligible, trainLogisticRegression } from "../dist/regression-trainer.js";
+import { buildWinnerGameId, fetchWinnerScoreboard } from "../dist/results-fetcher.js";
 
 const tinySample = sampleAdjustedPlayerRating(153.46, 4);
 assert.ok(tinySample > 50 && tinySample < 51, `expected near-average rating, received ${tinySample}`);
@@ -29,10 +30,25 @@ const completeEvidence = winnerEvidenceQuality({
   awayBullpenAvailable: true,
   homeBullpenAvailable: true,
   marketAvailable: true,
+  marketEstimated: false,
   lineupsConfirmed: true
 });
 assert.equal(completeEvidence.score, 1);
 assert.equal(completeEvidence.reliability, 1);
+
+const estimatedMarketEvidence = winnerEvidenceQuality({
+  awayLineupCoverage: 1,
+  homeLineupCoverage: 1,
+  awayStarterQuality: 1,
+  homeStarterQuality: 1,
+  awayBullpenAvailable: true,
+  homeBullpenAvailable: true,
+  marketAvailable: true,
+  marketEstimated: true,
+  lineupsConfirmed: true
+});
+assert.ok(estimatedMarketEvidence.score < completeEvidence.score);
+assert.ok(estimatedMarketEvidence.notes.some((note) => note.includes("estimated from one listed line")));
 
 const partialEvidence = winnerEvidenceQuality({
   awayLineupCoverage: 2 / 9,
@@ -46,6 +62,18 @@ const partialEvidence = winnerEvidenceQuality({
 });
 assert.ok(partialEvidence.score < 0.3);
 assert.ok(shrinkProbabilityToEven(0.6, partialEvidence.reliability) < 0.56);
+
+const oneSidedThinEvidence = winnerEvidenceQuality({
+  awayLineupCoverage: 1,
+  homeLineupCoverage: 6 / 9,
+  awayStarterQuality: 1,
+  homeStarterQuality: 1,
+  awayBullpenAvailable: true,
+  homeBullpenAvailable: true,
+  marketAvailable: true,
+  lineupsConfirmed: true
+});
+assert.ok(oneSidedThinEvidence.notes.includes("partial lineup coverage"));
 
 function firstInningRows(totalGames, correctnessForIndex) {
   const snapshots = [];
@@ -124,6 +152,53 @@ assert.equal(stableRegression.trainingSampleSize, MIN_REGRESSION_SAMPLE);
 assert.ok(!stableRegression.featureNames.includes("coverageDiff"));
 assert.ok(!stableRegression.featureNames.includes("winProbDiff"));
 
+assert.equal(buildWinnerGameId("2026-08-17", "NYY", "BOS", 123, false), "2026-08-17_NYY_BOS");
+assert.equal(buildWinnerGameId("2026-08-17", "NYY", "BOS", 123, true), "2026-08-17_NYY_BOS_123");
+
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async () => ({
+  ok: true,
+  json: async () => ({
+    dates: [{
+      date: "2026-08-17",
+      games: [
+        {
+          gamePk: 1001,
+          doubleHeader: "Y",
+          status: { abstractGameState: "Final", detailedState: "Final", codedGameState: "F" },
+          teams: { away: { team: { name: "New York Yankees" }, score: 2 }, home: { team: { name: "Boston Red Sox" }, score: 3 } },
+          linescore: { innings: [{ num: 1, away: { runs: 0 }, home: { runs: 0 } }] }
+        },
+        {
+          gamePk: 1002,
+          doubleHeader: "Y",
+          status: { abstractGameState: "Final", detailedState: "Final", codedGameState: "F" },
+          teams: { away: { team: { name: "New York Yankees" }, score: 5 }, home: { team: { name: "Boston Red Sox" }, score: 1 } },
+          linescore: { innings: [{ num: 1, away: { runs: 1 }, home: { runs: 0 } }] }
+        },
+        {
+          gamePk: 2001,
+          doubleHeader: "N",
+          status: { abstractGameState: "Final", detailedState: "Final", codedGameState: "F" },
+          teams: { away: { team: { name: "Chicago Cubs" }, score: 4 }, home: { team: { name: "St. Louis Cardinals" }, score: 2 } },
+          linescore: { innings: [{ num: 1, away: { runs: 0 }, home: { runs: 0 } }] }
+        }
+      ]
+    }]
+  })
+});
+try {
+  const doubleheaderScoreboard = await fetchWinnerScoreboard("2026-08-17", "2026-08-17");
+  assert.deepEqual(
+    doubleheaderScoreboard.results.map((row) => row.gameId),
+    ["2026-08-17_NYY_BOS_1001", "2026-08-17_NYY_BOS_1002", "2026-08-17_CHC_STL"]
+  );
+  assert.equal(doubleheaderScoreboard.firstInningResults[0].nrfiHit, 1);
+  assert.equal(doubleheaderScoreboard.firstInningResults[1].nrfiHit, 0);
+} finally {
+  globalThis.fetch = originalFetch;
+}
+
 const originalCwd = process.cwd();
 const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "mlb-feature-store-"));
 let featureStore = null;
@@ -159,7 +234,7 @@ try {
     lineupCoverageAway: 8 / 9,
     lineupCoverageHome: 1,
     dataQuality: 0.91,
-    dataQualityNotes: ["partial lineup coverage"],
+    dataQualityNotes: ["market sanity check is estimated from one listed line"],
     heuristicPick: "HOME",
     heuristicEdge: 1,
     heuristicConfidence: 51,
@@ -175,6 +250,10 @@ try {
   assert.equal(regressionTrainingEligible({ ...modernFeatureSnapshot, analysisVersion: "legacy" }), false);
   assert.equal(regressionTrainingEligible({ ...modernFeatureSnapshot, dataQuality: 0.74 }), false);
   assert.equal(regressionTrainingEligible({ ...modernFeatureSnapshot, predictionMethod: "legacy snapshot" }), false);
+  assert.equal(regressionTrainingEligible({ ...modernFeatureSnapshot, dataQualityNotes: ["partial lineup coverage"] }), false);
+  assert.equal(regressionTrainingEligible({ ...modernFeatureSnapshot, lineupCoverageHome: 6 / 9, dataQualityNotes: [] }), false);
+  assert.equal(regressionTrainingEligible({ ...modernFeatureSnapshot, dataQualityNotes: ["at least one starter lacks full Statcast coverage"] }), false);
+  assert.equal(regressionTrainingEligible({ ...modernFeatureSnapshot, dataQualityNotes: ["at least one bullpen feed is missing"] }), false);
   assert.equal(regressionTrainingEligible({
     ...modernFeatureSnapshot,
     dataQualityNotes: ["lineups are projected rather than confirmed"]
@@ -182,7 +261,7 @@ try {
   const rows = featureStore.upsertWinnerFeatureSnapshots([modernFeatureSnapshot]);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].dataQuality, 0.91);
-  assert.deepEqual(rows[0].dataQualityNotes, ["partial lineup coverage"]);
+  assert.deepEqual(rows[0].dataQualityNotes, ["market sanity check is estimated from one listed line"]);
   assert.equal(rows[0].wagerQualified, true);
   assert.equal(rows[0].selectiveConfidence, 57);
   featureStore.upsertFirstInningFeatureSnapshots([approvedFirstInningRows.snapshots[0]]);

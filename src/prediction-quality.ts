@@ -6,6 +6,7 @@ export type WinnerEvidenceInput = {
   awayBullpenAvailable: boolean;
   homeBullpenAvailable: boolean;
   marketAvailable: boolean;
+  marketEstimated?: boolean;
   lineupsConfirmed: boolean;
 };
 
@@ -15,6 +16,8 @@ export type WinnerEvidenceQuality = {
   notes: string[];
 };
 
+export const MIN_TRAINING_LINEUP_COVERAGE = 7 / 9;
+
 function clampUnit(value: number) {
   return Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0));
 }
@@ -23,17 +26,22 @@ export function winnerEvidenceQuality(input: WinnerEvidenceInput): WinnerEvidenc
   const lineupCoverage = (clampUnit(input.awayLineupCoverage) + clampUnit(input.homeLineupCoverage)) / 2;
   const starterCoverage = (clampUnit(input.awayStarterQuality) + clampUnit(input.homeStarterQuality)) / 2;
   const bullpenCoverage = (Number(input.awayBullpenAvailable) + Number(input.homeBullpenAvailable)) / 2;
+  const marketCoverage = input.marketAvailable ? (input.marketEstimated ? 0.6 : 1) : 0;
   const score = lineupCoverage * 0.45
     + starterCoverage * 0.25
     + bullpenCoverage * 0.15
-    + Number(input.marketAvailable) * 0.10
+    + marketCoverage * 0.10
     + Number(input.lineupsConfirmed) * 0.05;
   const notes: string[] = [];
 
-  if (lineupCoverage < 0.78) notes.push("partial lineup coverage");
+  if (input.awayLineupCoverage < MIN_TRAINING_LINEUP_COVERAGE
+    || input.homeLineupCoverage < MIN_TRAINING_LINEUP_COVERAGE) {
+    notes.push("partial lineup coverage");
+  }
   if (starterCoverage < 1) notes.push("at least one starter lacks full Statcast coverage");
   if (bullpenCoverage < 1) notes.push("at least one bullpen feed is missing");
   if (!input.marketAvailable) notes.push("no two-sided market sanity check");
+  if (input.marketAvailable && input.marketEstimated) notes.push("market sanity check is estimated from one listed line");
   if (!input.lineupsConfirmed) notes.push("lineups are projected rather than confirmed");
 
   return {

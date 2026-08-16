@@ -12,7 +12,7 @@ import { buildRegressionTrainingRows, FALLBACK_MARKET_WEIGHT, fallbackHomeWinPro
 import { evaluateHeuristicBaseline, evaluateRegressionModel, evaluateWalkForwardRegression, QUALIFIED_CONFIDENCE_THRESHOLD, RECENT_VALIDATION_DATES } from "./model-evaluator.js";
 import type { RegressionReport, WinnerFeatureSnapshot } from "./regression-types.js";
 import { clampPlayerRating, lineupAdjustedTeamRating, sampleAdjustedPlayerRating } from "./rating-utils.js";
-import { shrinkProbabilityToEven, winnerEvidenceQuality } from "./prediction-quality.js";
+import { MIN_TRAINING_LINEUP_COVERAGE, shrinkProbabilityToEven, winnerEvidenceQuality } from "./prediction-quality.js";
 import type { FirstInningFeatureSnapshot, FirstInningPerformance, FirstInningPick } from "./first-inning-types.js";
 import { evaluateFirstInningPerformance } from "./first-inning-evaluator.js";
 
@@ -23,7 +23,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(process.cwd(), "public")));
 
 const PORT = process.env.PORT || 3000;
-const ANALYSIS_VERSION = "models-v8.6-regression-stability";
+const ANALYSIS_VERSION = "models-v8.7-clean-game-identity";
 const CURRENT_SEASON = new Date().getFullYear();
 const PREVIOUS_SEASON = CURRENT_SEASON - 1;
 
@@ -137,6 +137,10 @@ type GameBatter = {
 };
 
 type GameCard = {
+  gameId: string | null;
+  gamePk: number | null;
+  gameNumber: number | null;
+  gameTime: string | null;
   away: string;
   home: string;
   awayP: GamePitcher | null;
@@ -162,6 +166,10 @@ type SourceSummary = {
 };
 
 type ScheduleGame = {
+  gameId: string;
+  gamePk: number;
+  gameNumber: number;
+  repeatedMatchup: boolean;
   away: string;
   home: string;
   gameTime: string | null;
@@ -170,6 +178,7 @@ type ScheduleGame = {
 type BetType = "general" | "nrfi" | "strikeouts" | "winner";
 
 type MatchedGameContext = {
+  gameId: string | null;
   away: string;
   home: string;
   awayPitcher: PitcherStat | null;
@@ -1623,7 +1632,7 @@ function snapshotOddsForGame(snapshot: WinnerFeatureSnapshot | null): GameOdds |
     runLine: null,
     awayRunLinePrice: null,
     homeRunLinePrice: null,
-    estimated: snapshot.analysisVersion === ANALYSIS_VERSION
+    estimated: Boolean(snapshot.dataQualityNotes?.some((note) => /estimated from one listed line/i.test(note)))
   };
 }
 
@@ -1777,7 +1786,8 @@ function formatScheduleTime(dateTime?: string) {
   try {
     return new Date(dateTime).toLocaleTimeString("en-US", {
       hour: "numeric",
-      minute: "2-digit"
+      minute: "2-digit",
+      timeZone: "America/New_York"
     });
   } catch {
     return null;
@@ -1843,6 +1853,10 @@ function parseRotoWireGames(html: string) {
     const homeParsed = parseList(homeList);
 
     games.push({
+      gameId: null,
+      gamePk: null,
+      gameNumber: null,
+      gameTime: cleanText(game.find(".lineup__time").first().text()) || null,
       away: uniqueTeams[0],
       home: uniqueTeams[1],
       awayP: awayParsed.pitcher,
@@ -1857,24 +1871,46 @@ function parseRotoWireGames(html: string) {
     });
   });
 
-  const seen = new Set<string>();
-  return games.filter((game) => {
-    const key = `${game.away}-${game.home}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  return games;
+}
+
+function normalizedGameTime(value: string | null) {
+  return cleanText(value || "").replace(/\s*(?:ET|EST|EDT)$/i, "").toUpperCase();
 }
 
 async function loadDailyLineups() {
   const [html, schedule] = await Promise.all([fetchHtml(ROTOWIRE_LINEUPS_URL), loadSchedule()]);
-  const scheduleKeys = new Set(schedule.games.map((game) => {
+  const scheduleByMatchup = new Map<string, ScheduleGame[]>();
+  schedule.games.forEach((game) => {
     const away = resolveTeamKey(game.away);
     const home = resolveTeamKey(game.home);
-    return away && home ? `${away}_${home}` : "";
-  }).filter(Boolean));
+    if (!away || !home) return;
+    const key = `${away}_${home}`;
+    scheduleByMatchup.set(key, [...(scheduleByMatchup.get(key) || []), game]);
+  });
   const parsedGames = parseRotoWireGames(html);
-  const games = parsedGames.filter((game) => scheduleKeys.has(`${game.away}_${game.home}`));
+  const usedGamePks = new Set<number>();
+  const games = parsedGames.flatMap((game) => {
+    const candidates = scheduleByMatchup.get(`${game.away}_${game.home}`) || [];
+    if (!candidates.length) return [];
+    const cardTime = normalizedGameTime(game.gameTime);
+    const unused = candidates.filter((candidate) => !usedGamePks.has(candidate.gamePk));
+    const exactTimeMatch = unused.find((candidate) =>
+      cardTime && normalizedGameTime(candidate.gameTime) === cardTime
+    );
+    // Never guess between two games with the same teams; a wrong starter/result
+    // pairing is worse than omitting an ambiguous doubleheader card.
+    const matched = candidates.length === 1 ? candidates[0] : exactTimeMatch;
+    if (!matched) return [];
+    usedGamePks.add(matched.gamePk);
+    return [{
+      ...game,
+      gameId: matched.gameId,
+      gamePk: matched.gamePk,
+      gameNumber: matched.gameNumber,
+      gameTime: game.gameTime || matched.gameTime
+    }];
+  });
   return {
     source: ROTOWIRE_LINEUPS_URL,
     scrapedAt: new Date().toISOString(),
@@ -1900,6 +1936,9 @@ async function loadSchedule() {
     dates?: Array<{
       date: string;
       games?: Array<{
+        gamePk?: number;
+        gameNumber?: number;
+        doubleHeader?: string;
         gameDate?: string;
         teams?: {
           away?: { team?: { name?: string } };
@@ -1909,13 +1948,39 @@ async function loadSchedule() {
     }>;
   };
 
-  const games = (data.dates?.[0]?.games || [])
+  const rawGames = (data.dates?.[0]?.games || [])
     .map((game) => ({
+      gamePk: Number(game.gamePk || 0),
+      gameNumber: Number(game.gameNumber || 1),
+      doubleHeader: cleanText(game.doubleHeader || "N"),
       away: cleanText(game.teams?.away?.team?.name || ""),
       home: cleanText(game.teams?.home?.team?.name || ""),
       gameTime: formatScheduleTime(game.gameDate)
     }))
-    .filter((game) => game.away && game.home);
+    .filter((game) => game.gamePk && game.away && game.home);
+  const matchupCounts = new Map<string, number>();
+  rawGames.forEach((game) => {
+    const away = resolveTeamKey(game.away);
+    const home = resolveTeamKey(game.home);
+    if (!away || !home) return;
+    const key = `${away}_${home}`;
+    matchupCounts.set(key, (matchupCounts.get(key) || 0) + 1);
+  });
+  const games: ScheduleGame[] = rawGames.flatMap((game) => {
+    const away = resolveTeamKey(game.away);
+    const home = resolveTeamKey(game.home);
+    if (!away || !home) return [];
+    const repeatedMatchup = (matchupCounts.get(`${away}_${home}`) || 0) > 1 || game.doubleHeader !== "N";
+    return [{
+      gameId: buildWinnerGameId(today, away, home, game.gamePk, repeatedMatchup),
+      gamePk: game.gamePk,
+      gameNumber: game.gameNumber,
+      repeatedMatchup,
+      away: game.away,
+      home: game.home,
+      gameTime: game.gameTime
+    }];
+  });
 
   return {
     source: "https://statsapi.mlb.com/api/v1/schedule",
@@ -2030,6 +2095,7 @@ function matchGameContext(gameContext: string): MatchedGameContext | null {
   const rotowireTotal = Number.parseFloat(totalText);
 
   return {
+    gameId: gameContext.match(/GAME_ID:\s*([^\s]+)/i)?.[1]?.trim() || null,
     away: teams.away,
     home: teams.home,
     awayPitcher: awayPitcherName ? findPitcherStat(awayPitcherName) : null,
@@ -2049,6 +2115,7 @@ function matchGameContext(gameContext: string): MatchedGameContext | null {
 function matchGameCard(card: GameCard): MatchedGameContext {
   const parsedTotal = Number.parseFloat(card.ou || "");
   return {
+    gameId: card.gameId,
     away: card.away,
     home: card.home,
     awayPitcher: card.awayP?.name ? findPitcherStat(card.awayP.name) : null,
@@ -2061,6 +2128,10 @@ function matchGameCard(card: GameCard): MatchedGameContext {
     rotowireTotal: Number.isFinite(parsedTotal) ? parsedTotal : null,
     lineupsConfirmed: card.confirmed
   };
+}
+
+function matchedGameId(game: MatchedGameContext, date = mlbCalendarDate()) {
+  return game.gameId || buildWinnerGameId(date, game.away, game.home);
 }
 
 function rankPitcherForKs(
@@ -2388,7 +2459,7 @@ async function winnerTrendScore(team: string, isHome: boolean) {
 }
 
 async function buildWinnerBreakdown(game: MatchedGameContext) {
-  const gameId = buildWinnerGameId(mlbCalendarDate(), game.away, game.home);
+  const gameId = matchedGameId(game);
   const pregameSnapshot = readWinnerFeatureSnapshots().find((snapshot) => snapshot.gameId === gameId) || null;
   let gameState: string | null = null;
   try {
@@ -2446,6 +2517,7 @@ async function buildWinnerBreakdown(game: MatchedGameContext) {
     awayBullpenAvailable: awayBullpen !== null,
     homeBullpenAvailable: homeBullpen !== null,
     marketAvailable: awayImplied !== null && homeImplied !== null,
+    marketEstimated: odds?.estimated ?? false,
     lineupsConfirmed: game.lineupsConfirmed
   });
 
@@ -2556,7 +2628,7 @@ function winnerPrediction(game: MatchedGameContext, breakdown: Awaited<ReturnTyp
   const snapshot: WinnerFeatureSnapshot = {
     analysisVersion: ANALYSIS_VERSION,
     snapshotDate: mlbCalendarDate(),
-    gameId: buildWinnerGameId(mlbCalendarDate(), game.away, game.home),
+    gameId: matchedGameId(game),
     away: game.away,
     home: game.home,
     awayOffense: breakdown.awayOffense,
@@ -2656,7 +2728,7 @@ async function buildWinnerFeatureSnapshot(game: MatchedGameContext, snapshotDate
   return {
     analysisVersion: ANALYSIS_VERSION,
     snapshotDate,
-    gameId: buildWinnerGameId(snapshotDate, game.away, game.home),
+    gameId: matchedGameId(game, snapshotDate),
     away: game.away,
     home: game.home,
     awayOffense: breakdown.awayOffense,
@@ -2702,7 +2774,7 @@ async function snapshotWinnerFeaturesForGames(games: MatchedGameContext[], snaps
   const statuses = new Map(scoreboard.statuses.map((status) => [status.gameId, status.state]));
   const existingGameIds = new Set(readWinnerFeatureSnapshots().map((snapshot) => snapshot.gameId));
   const eligibleGames = games.filter((game) => {
-    const gameId = buildWinnerGameId(snapshotDate, game.away, game.home);
+    const gameId = matchedGameId(game, snapshotDate);
     return game.lineupsConfirmed
       && statuses.get(gameId) === "scheduled"
       && !existingGameIds.has(gameId);
@@ -2731,7 +2803,7 @@ async function buildFirstInningFeatureSnapshot(
 ): Promise<FirstInningFeatureSnapshot> {
   const projection = await firstInningProjection(game);
   return {
-    gameId: buildWinnerGameId(snapshotDate, game.away, game.home),
+    gameId: matchedGameId(game, snapshotDate),
     snapshotDate,
     away: game.away,
     home: game.home,
@@ -2752,8 +2824,8 @@ async function snapshotFirstInningFeaturesForGames(games: MatchedGameContext[], 
   const existingGameIds = new Set(readFirstInningFeatureSnapshots().map((snapshot) => snapshot.gameId));
   const eligibleGames = games.filter((game) =>
     game.lineupsConfirmed
-    && statuses.get(buildWinnerGameId(snapshotDate, game.away, game.home)) === "scheduled"
-    && !existingGameIds.has(buildWinnerGameId(snapshotDate, game.away, game.home))
+    && statuses.get(matchedGameId(game, snapshotDate)) === "scheduled"
+    && !existingGameIds.has(matchedGameId(game, snapshotDate))
   );
   const snapshots = await Promise.all(eligibleGames.map((game) => buildFirstInningFeatureSnapshot(game, snapshotDate)));
   return upsertFirstInningFeatureSnapshots(snapshots);
@@ -2995,7 +3067,8 @@ async function refreshRegressionArtifacts() {
       excludedFeatureRows: featureRows.length - eligibleFeatureRows.length,
       joinedEligibleRows: trainingRows.length,
       minimumDataQuality: MIN_REGRESSION_DATA_QUALITY,
-      minimumTrainingRows: MIN_REGRESSION_SAMPLE
+      minimumTrainingRows: MIN_REGRESSION_SAMPLE,
+      minimumLineupCoveragePerTeam: MIN_TRAINING_LINEUP_COVERAGE
     },
     regressionFeatureDiagnostics: featureDiagnostics,
     componentContributionDiagnostics: contributionDiagnostics,
@@ -3649,6 +3722,8 @@ app.get("/api/health", (_req, res) => {
     },
     pregameSnapshots: {
       confirmedLineupsOnly: true,
+      minimumTrainingLineupCoveragePerTeam: MIN_TRAINING_LINEUP_COVERAGE,
+      gameIdentity: "MLB gamePk suffix for repeated same-day matchups",
       pollIntervalMinutes: PREGAME_SNAPSHOT_POLL_MS / 60_000,
       lastPollAt: lastPregameSnapshotPollAt,
       lastPollStatus: lastPregameSnapshotPollStatus,
