@@ -7,7 +7,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/index.ts",
     "start": "npm run build && node dist/index.js",
-    "test": "npm run build && node --test --test-isolation=none test/*.test.mjs",
+    "test": "npm run build && node test/rating-utils.test.mjs",
     "analyze:history": "node scripts/analyze-history.mjs",
     "analyze:market-blend": "node scripts/analyze-market-blend.mjs",
     "calibrate:rotowire": "node scripts/calibrate-rotowire-hold.mjs",
