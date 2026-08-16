@@ -15,6 +15,7 @@ import { clampPlayerRating, lineupAdjustedTeamRating, sampleAdjustedPlayerRating
 import { MIN_TRAINING_LINEUP_COVERAGE, shrinkProbabilityToEven, winnerEvidenceQuality } from "./prediction-quality.js";
 import type { FirstInningFeatureSnapshot, FirstInningPerformance, FirstInningPick } from "./first-inning-types.js";
 import { evaluateFirstInningPerformance } from "./first-inning-evaluator.js";
+import { parsePlausibleAmericanMoneyline } from "./odds-utils.js";
 
 dotenv.config();
 
@@ -23,7 +24,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(process.cwd(), "public")));
 
 const PORT = process.env.PORT || 3000;
-const ANALYSIS_VERSION = "models-v8.7-clean-game-identity";
+const ANALYSIS_VERSION = "models-v8.7.1-market-sanity";
 const CURRENT_SEASON = new Date().getFullYear();
 const PREVIOUS_SEASON = CURRENT_SEASON - 1;
 
@@ -1583,10 +1584,10 @@ function americanOddsFromProbability(probability: number) {
 }
 
 function rotowireOddsForGame(game: MatchedGameContext): GameOdds | null {
-  const match = cleanText(game.rotowireLine || "").replace(/\u2212/g, "-").match(/\b([A-Z]{2,4})\s*([+-]\d{2,4})\b/);
-  if (!match) return null;
-  const listedTeam = resolveTeamKey(match[1]);
-  const listedPrice = Number(match[2]);
+  const parsedLine = parsePlausibleAmericanMoneyline(cleanText(game.rotowireLine || ""));
+  if (!parsedLine) return null;
+  const listedTeam = resolveTeamKey(parsedLine.team);
+  const listedPrice = parsedLine.price;
   const listedImplied = impliedProbability(listedPrice);
   if (!listedTeam || listedImplied === null || (listedTeam !== game.away && listedTeam !== game.home)) return null;
 
@@ -1851,6 +1852,12 @@ function parseRotoWireGames(html: string) {
 
     const awayParsed = parseList(awayList);
     const homeParsed = parseList(homeList);
+    const lineItem = game.find(".lineup__odds-item").filter((__, item) =>
+      /^LINE$/i.test(cleanText($(item).find("b").first().text()))
+    ).first();
+    const line = [".fanduel", ".composite", ".draftkings", ".betmgm"]
+      .map((selector) => parsePlausibleAmericanMoneyline(cleanText(lineItem.find(selector).first().text())))
+      .find((candidate) => candidate && uniqueTeams.includes(candidate.team)) || null;
 
     games.push({
       gameId: null,
@@ -1865,7 +1872,7 @@ function parseRotoWireGames(html: string) {
       homeLineup: homeParsed.lineup,
       confirmed: awayParsed.confirmed && homeParsed.confirmed,
       ou: text.match(/O\/U\s*([\d.]+)/i)?.[1] || null,
-      line: text.match(/LINE\s+([A-Z]{2,4})\s+([+-]?\d+)/i)?.slice(1).join(" ") || null,
+      line: line?.text || null,
       umpireKpg: text.match(/([\d.]+)\s*K\/G/i)?.[1] || null,
       weather: null
     });
@@ -4054,6 +4061,10 @@ app.listen(PORT, () => {
     lastMorningRefreshStatus = "error";
     lastMorningRefreshError = getErrorMessage(error);
     console.warn("Startup refresh failed:", lastMorningRefreshError);
+  }).finally(() => {
+    pollConfirmedPregameSnapshots().catch((error) => {
+      console.warn("Startup confirmed-lineup snapshot poll failed:", getErrorMessage(error));
+    });
   });
   scheduleMorningRefresh();
   setInterval(() => {
