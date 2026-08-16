@@ -5,6 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { clampPlayerRating, lineupAdjustedTeamRating, sampleAdjustedPlayerRating } from "../dist/rating-utils.js";
 import { shrinkProbabilityToEven, winnerEvidenceQuality } from "../dist/prediction-quality.js";
+import { evaluateFirstInningPerformance } from "../dist/first-inning-evaluator.js";
 
 const tinySample = sampleAdjustedPlayerRating(153.46, 4);
 assert.ok(tinySample > 50 && tinySample < 51, `expected near-average rating, received ${tinySample}`);
@@ -44,6 +45,59 @@ const partialEvidence = winnerEvidenceQuality({
 });
 assert.ok(partialEvidence.score < 0.3);
 assert.ok(shrinkProbabilityToEven(0.6, partialEvidence.reliability) < 0.56);
+
+function firstInningRows(totalGames, correctnessForIndex) {
+  const snapshots = [];
+  const results = [];
+  for (let index = 0; index < totalGames; index += 1) {
+    const day = String(1 + Math.floor(index / 6)).padStart(2, "0");
+    const gameId = `2026-08-${day}-A${index}-H${index}`;
+    const pick = index % 2 ? "NRFI" : "YRFI";
+    const correct = correctnessForIndex(index);
+    snapshots.push({
+      gameId,
+      snapshotDate: `2026-08-${day}`,
+      away: `A${index}`,
+      home: `H${index}`,
+      awayHalfScore: 60,
+      homeHalfScore: 60,
+      nrfiScore: pick === "NRFI" ? 62 : 54,
+      pick,
+      pickScore: 62,
+      total: 8,
+      dataQuality: 0.95,
+      analysisVersion: "test"
+    });
+    const actualNrfi = correct ? pick === "NRFI" : pick !== "NRFI";
+    results.push({
+      gameId,
+      date: `2026-08-${day}`,
+      away: `A${index}`,
+      home: `H${index}`,
+      awayFirstRuns: actualNrfi ? 0 : 1,
+      homeFirstRuns: 0,
+      nrfiHit: actualNrfi ? 1 : 0
+    });
+  }
+  return { snapshots, results };
+}
+
+const approvedFirstInningRows = firstInningRows(30, () => true);
+const approvedFirstInning = evaluateFirstInningPerformance(
+  approvedFirstInningRows.snapshots,
+  approvedFirstInningRows.results
+);
+assert.equal(approvedFirstInning.accuracy, 1);
+assert.equal(approvedFirstInning.approved, true);
+
+const slumpingFirstInningRows = firstInningRows(60, (index) => index < 35 || index >= 50);
+const slumpingFirstInning = evaluateFirstInningPerformance(
+  slumpingFirstInningRows.snapshots,
+  slumpingFirstInningRows.results
+);
+assert.ok(slumpingFirstInning.accuracy >= 0.7);
+assert.ok(slumpingFirstInning.recentAccuracy < 0.55);
+assert.equal(slumpingFirstInning.approved, false);
 
 const originalCwd = process.cwd();
 const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "mlb-feature-store-"));
@@ -93,10 +147,14 @@ try {
   assert.equal(rows.length, 1);
   assert.equal(rows[0].dataQuality, 0.91);
   assert.deepEqual(rows[0].dataQualityNotes, ["partial lineup coverage"]);
+  featureStore.upsertFirstInningFeatureSnapshots([approvedFirstInningRows.snapshots[0]]);
+  featureStore.upsertFirstInningResults([approvedFirstInningRows.results[0]]);
+  assert.equal(featureStore.readFirstInningFeatureSnapshots().length, 1);
+  assert.equal(featureStore.readFirstInningResults()[0].nrfiHit, approvedFirstInningRows.results[0].nrfiHit);
 } finally {
   featureStore?.closeFeatureStore();
   process.chdir(originalCwd);
   fs.rmSync(temporaryDirectory, { recursive: true, force: true });
 }
 
-console.log("rating and evidence-quality assertions passed");
+console.log("rating, evidence-quality, and first-inning assertions passed");
