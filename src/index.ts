@@ -3749,6 +3749,7 @@ app.get("/api/recommendations/history", async (req, res) => {
           : null;
       const analysisVersion = snapshot.analysisVersion || "legacy";
       const legacySnapshot = analysisVersion === "legacy" || snapshot.predictionMethod === "legacy snapshot";
+      const cleanCohort = regressionTrainingEligible(snapshot);
       return {
         date: snapshot.snapshotDate,
         gameId: snapshot.gameId,
@@ -3772,7 +3773,8 @@ app.get("/api/recommendations/history", async (req, res) => {
         marketLean: snapshot.marketLean,
         dataQuality: snapshot.dataQuality ?? null,
         dataQualityNotes: snapshot.dataQualityNotes ?? [],
-        analysisVersion
+        analysisVersion,
+        cleanCohort
       };
     })
     .sort((a, b) => b.date.localeCompare(a.date) || a.gameId.localeCompare(b.gameId));
@@ -3805,9 +3807,9 @@ app.get("/api/recommendations/history", async (req, res) => {
       marketAccuracy: cohortMarket.length ? cohortMarketCorrect / cohortMarket.length : null
     };
   };
-  const prospectiveGraded = graded.filter((game) => game.analysisVersion !== "legacy");
-  const legacyGraded = graded.filter((game) => game.analysisVersion === "legacy");
-  const qualifiedProspectiveGames = games.filter((game) => game.analysisVersion !== "legacy" && game.wagerQualified);
+  const prospectiveGraded = graded.filter((game) => game.cleanCohort);
+  const historicalGraded = graded.filter((game) => !game.cleanCohort);
+  const qualifiedProspectiveGames = games.filter((game) => game.cleanCohort && game.wagerQualified);
   const qualifiedProspectiveGraded = qualifiedProspectiveGames.filter((game) => game.status === "graded");
   const qualifiedProspectiveSummary = {
     ...cohortSummary(qualifiedProspectiveGraded),
@@ -3832,7 +3834,8 @@ app.get("/api/recommendations/history", async (req, res) => {
       marketAccuracy: marketGraded.length ? marketCorrectCount / marketGraded.length : null,
       prospective: cohortSummary(prospectiveGraded),
       qualifiedProspective: qualifiedProspectiveSummary,
-      legacy: cohortSummary(legacyGraded),
+      historical: cohortSummary(historicalGraded),
+      legacy: cohortSummary(historicalGraded),
       byAnalysisVersion
     },
     games

@@ -318,7 +318,7 @@
       </div>
     </div>
 
-    <footer>Prospective accuracy begins with versioned immutable snapshots. Legacy rows remain visible for accountability, but their historical strength score is not treated as probability confidence.</footer>
+    <footer>Prospective accuracy includes only clean training-eligible immutable snapshots. Older and incomplete rows remain visible for accountability, but their strength scores are not treated as probability confidence.</footer>
   </div>
 
 <script>
@@ -408,11 +408,11 @@
 
       const prospective = data.summary.prospective;
       const qualified = data.summary.qualifiedProspective;
-      const legacy = data.summary.legacy;
+      const historical = data.summary.historical || data.summary.legacy;
       document.getElementById('heuristicAccuracy').textContent = fmtPct(prospective.accuracy);
       document.getElementById('heuristicSub').textContent = prospective.gradedCount
         ? `${prospective.correctCount}/${prospective.gradedCount} prospective graded · ${data.summary.liveCount || 0} live · ${data.summary.pendingCount} pending`
-        : `awaiting prospective results · legacy ${legacy.correctCount}/${legacy.gradedCount} at ${fmtPct(legacy.accuracy)}`;
+        : `awaiting clean prospective results · historical ${historical.correctCount}/${historical.gradedCount} at ${fmtPct(historical.accuracy)}`;
 
       document.getElementById('qualifiedAccuracy').textContent = fmtPct(qualified.accuracy);
       document.getElementById('qualifiedSub').textContent = qualified.gradedCount
