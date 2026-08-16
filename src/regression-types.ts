@@ -109,6 +109,7 @@ export type RegressionReport = {
     joinedEligibleRows: number;
     minimumDataQuality: number;
     minimumTrainingRows?: number;
+    minimumLineupCoveragePerTeam?: number;
   };
   regressionFeatureDiagnostics?: RegressionFeatureDiagnostic[];
   componentContributionDiagnostics?: ComponentContributionDiagnostic[];

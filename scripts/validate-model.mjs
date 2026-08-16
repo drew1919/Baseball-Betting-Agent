@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { buildRegressionTrainingRows, MIN_REGRESSION_DATA_QUALITY, MIN_REGRESSION_SAMPLE, predictHomeWinProbability, REGRESSION_FEATURE_NAMES, REGRESSION_FEATURE_VERSION, regressionTrainingEligible, trainLogisticRegression } from "../dist/regression-trainer.js";
+import { MIN_TRAINING_LINEUP_COVERAGE } from "../dist/prediction-quality.js";
 import { evaluateHeuristicBaseline, evaluateWalkForwardRegression, QUALIFIED_CONFIDENCE_THRESHOLD } from "../dist/model-evaluator.js";
 
 const databasePath = process.argv[2] || "data/app.db";
@@ -171,7 +172,8 @@ console.log(JSON.stringify({
     eligibleJoinedRows: eligibleJoined.length,
     excludedJoinedRows: joined.length - eligibleJoined.length,
     minimumDataQuality: MIN_REGRESSION_DATA_QUALITY,
-    minimumTrainingRows: MIN_REGRESSION_SAMPLE
+    minimumTrainingRows: MIN_REGRESSION_SAMPLE,
+    minimumLineupCoveragePerTeam: MIN_TRAINING_LINEUP_COVERAGE
   },
   trainingRows: trainingRows.length,
   candidateVersion: candidate?.featureVersion || null,

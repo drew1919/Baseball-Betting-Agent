@@ -314,6 +314,7 @@ function countMatched(g) {
 
 function buildCtx(g) {
   var lines = [];
+  if (g.gameId) lines.push("GAME_ID: " + g.gameId);
   lines.push("GAME: " + g.away + " @ " + g.home + " (" + (g.confirmed ? "Confirmed" : "Projected") + " lineups)");
   if (g.awayP) lines.push("Away starter: " + g.awayP.name + " | " + (g.awayP.hand || "") + " | " + (g.awayP.era || "?") + " ERA");
   if (g.homeP) lines.push("Home starter: " + g.homeP.name + " | " + (g.homeP.hand || "") + " | " + (g.homeP.era || "?") + " ERA");

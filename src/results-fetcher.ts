@@ -73,8 +73,15 @@ function resolveTeamKey(value: string) {
   return entry?.[0] || null;
 }
 
-export function buildWinnerGameId(date: string, away: string, home: string) {
-  return `${date}_${away}_${home}`;
+export function buildWinnerGameId(
+  date: string,
+  away: string,
+  home: string,
+  gamePk?: number | null,
+  distinguishRepeatedMatchup = false
+) {
+  const base = `${date}_${away}_${home}`;
+  return distinguishRepeatedMatchup && Number.isFinite(gamePk) ? `${base}_${gamePk}` : base;
 }
 
 export async function fetchWinnerScoreboard(startDate: string, endDate: string): Promise<WinnerScoreboard> {
@@ -92,6 +99,8 @@ export async function fetchWinnerScoreboard(startDate: string, endDate: string):
     dates?: Array<{
       date?: string;
       games?: Array<{
+        gamePk?: number;
+        doubleHeader?: string;
         status?: { abstractGameState?: string; detailedState?: string; codedGameState?: string };
         teams?: {
           away?: { team?: { name?: string }; score?: number };
@@ -113,7 +122,17 @@ export async function fetchWinnerScoreboard(startDate: string, endDate: string):
   const statuses: WinnerGameStatus[] = [];
   (data.dates || []).forEach((dateEntry) => {
     const gameDate = cleanText(dateEntry.date || "");
-    (dateEntry.games || []).forEach((game) => {
+    const games = dateEntry.games || [];
+    const matchupCounts = new Map<string, number>();
+    games.forEach((game) => {
+      const away = resolveTeamKey(cleanText(game.teams?.away?.team?.name || ""));
+      const home = resolveTeamKey(cleanText(game.teams?.home?.team?.name || ""));
+      if (!away || !home) return;
+      const key = `${away}_${home}`;
+      matchupCounts.set(key, (matchupCounts.get(key) || 0) + 1);
+    });
+
+    games.forEach((game) => {
       const away = resolveTeamKey(cleanText(game.teams?.away?.team?.name || ""));
       const home = resolveTeamKey(cleanText(game.teams?.home?.team?.name || ""));
       if (!away || !home || !gameDate) return;
@@ -130,7 +149,9 @@ export async function fetchWinnerScoreboard(startDate: string, endDate: string):
           : /postponed|cancelled|suspended/i.test(detailedState)
             ? "postponed"
             : "scheduled";
-      const gameId = buildWinnerGameId(gameDate, away, home);
+      const repeatedMatchup = (matchupCounts.get(`${away}_${home}`) || 0) > 1
+        || cleanText(game.doubleHeader || "N") !== "N";
+      const gameId = buildWinnerGameId(gameDate, away, home, game.gamePk, repeatedMatchup);
       statuses.push({ date: gameDate, gameId, away, home, awayScore, homeScore, state, detailedState });
       if (state !== "final" || awayScore === null || homeScore === null) return;
       rows.push({

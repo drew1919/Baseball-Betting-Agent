@@ -1,4 +1,5 @@
 import type { LogisticRegressionModel, RegressionFeatureDiagnostic, RegressionTrainingRow, WinnerFeatureSnapshot, WinnerResultRow } from "./regression-types.js";
+import { MIN_TRAINING_LINEUP_COVERAGE } from "./prediction-quality.js";
 
 const FEATURE_NAMES = [
   "offenseDiff",
@@ -15,8 +16,8 @@ const FEATURE_NAMES = [
 export type RegressionFeatureName = typeof FEATURE_NAMES[number];
 export const REGRESSION_FEATURE_NAMES: readonly RegressionFeatureName[] = FEATURE_NAMES;
 
-// Version 4 adds sample-size and feature-stability guards to the clean cohort.
-export const REGRESSION_FEATURE_VERSION = 4;
+// Version 5 requires complete structural inputs and unambiguous game identity.
+export const REGRESSION_FEATURE_VERSION = 5;
 export const MIN_REGRESSION_SAMPLE = 200;
 export const MIN_REGRESSION_DATA_QUALITY = 0.75;
 export const FALLBACK_MARKET_WEIGHT = 0.15;
@@ -50,9 +51,13 @@ export function regressionTrainingEligible(row: WinnerFeatureSnapshot) {
     && row.predictionMethod
     && row.predictionMethod !== "legacy snapshot"
     && Array.isArray(row.dataQualityNotes)
-    && !row.dataQualityNotes.some((note) => /projected rather than confirmed/i.test(note))
+    && !row.dataQualityNotes.some((note) =>
+      /projected rather than confirmed|partial lineup coverage|starter lacks full statcast coverage|bullpen feed is missing/i.test(note)
+    )
     && Number.isFinite(row.dataQuality)
     && (row.dataQuality as number) >= MIN_REGRESSION_DATA_QUALITY
+    && row.lineupCoverageAway >= MIN_TRAINING_LINEUP_COVERAGE
+    && row.lineupCoverageHome >= MIN_TRAINING_LINEUP_COVERAGE
     && finiteFeatures.every(Number.isFinite)
   );
 }
