@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { clampPlayerRating, lineupAdjustedTeamRating, sampleAdjustedPlayerRating } from "../dist/rating-utils.js";
 import { shrinkProbabilityToEven, winnerEvidenceQuality } from "../dist/prediction-quality.js";
 import { evaluateFirstInningPerformance } from "../dist/first-inning-evaluator.js";
+import { regressionTrainingEligible } from "../dist/regression-trainer.js";
 
 const tinySample = sampleAdjustedPlayerRating(153.46, 4);
 assert.ok(tinySample > 50 && tinySample < 51, `expected near-average rating, received ${tinySample}`);
@@ -106,7 +107,7 @@ process.chdir(temporaryDirectory);
 try {
   const featureStoreUrl = `${pathToFileURL(path.join(originalCwd, "dist", "feature-store.js")).href}?test=${Date.now()}`;
   featureStore = await import(featureStoreUrl);
-  const rows = featureStore.upsertWinnerFeatureSnapshots([{
+  const modernFeatureSnapshot = {
     analysisVersion: "test",
     snapshotDate: "2026-08-17",
     gameId: "2026-08-17-AWAY-HOME",
@@ -145,7 +146,12 @@ try {
     selectiveConfidence: 57,
     marketWeight: 0.15,
     marketLean: "HOME"
-  }]);
+  };
+  assert.equal(regressionTrainingEligible(modernFeatureSnapshot), true);
+  assert.equal(regressionTrainingEligible({ ...modernFeatureSnapshot, analysisVersion: "legacy" }), false);
+  assert.equal(regressionTrainingEligible({ ...modernFeatureSnapshot, dataQuality: 0.74 }), false);
+  assert.equal(regressionTrainingEligible({ ...modernFeatureSnapshot, predictionMethod: "legacy snapshot" }), false);
+  const rows = featureStore.upsertWinnerFeatureSnapshots([modernFeatureSnapshot]);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].dataQuality, 0.91);
   assert.deepEqual(rows[0].dataQualityNotes, ["partial lineup coverage"]);

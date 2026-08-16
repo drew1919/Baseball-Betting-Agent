@@ -15,10 +15,44 @@ const FEATURE_NAMES = [
 export type RegressionFeatureName = typeof FEATURE_NAMES[number];
 export const REGRESSION_FEATURE_NAMES: readonly RegressionFeatureName[] = FEATURE_NAMES;
 
-export const REGRESSION_FEATURE_VERSION = 2;
+// Version 3 requires the modern clean training cohort; v2 artifacts used legacy rows.
+export const REGRESSION_FEATURE_VERSION = 3;
 export const MIN_REGRESSION_SAMPLE = 60;
+export const MIN_REGRESSION_DATA_QUALITY = 0.75;
 export const FALLBACK_MARKET_WEIGHT = 0.15;
 const PROBABILITY_CALIBRATION_FACTOR = 0.5;
+
+export function regressionTrainingEligible(row: WinnerFeatureSnapshot) {
+  const finiteFeatures = [
+    row.awayOffense,
+    row.homeOffense,
+    row.awayPitching,
+    row.homePitching,
+    row.awayBullpen,
+    row.homeBullpen,
+    row.awayTrend,
+    row.homeTrend,
+    row.awayWinProb,
+    row.homeWinProb,
+    row.awayDefense,
+    row.homeDefense,
+    row.awayPark,
+    row.homePark,
+    row.lineupCoverageAway,
+    row.lineupCoverageHome,
+    row.heuristicEdge,
+    row.heuristicConfidence
+  ];
+  return Boolean(
+    row.analysisVersion
+    && row.analysisVersion !== "legacy"
+    && row.predictionMethod
+    && row.predictionMethod !== "legacy snapshot"
+    && Number.isFinite(row.dataQuality)
+    && (row.dataQuality as number) >= MIN_REGRESSION_DATA_QUALITY
+    && finiteFeatures.every(Number.isFinite)
+  );
+}
 
 function impliedProbability(odds: number | null) {
   if (odds === null || !Number.isFinite(odds) || odds === 0) return null;

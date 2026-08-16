@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { buildRegressionTrainingRows, predictHomeWinProbability, trainLogisticRegression } from "../dist/regression-trainer.js";
+import { buildRegressionTrainingRows, predictHomeWinProbability, regressionTrainingEligible, trainLogisticRegression } from "../dist/regression-trainer.js";
 
 const databasePath = process.argv[2] || "data/app.db";
 const db = new DatabaseSync(databasePath, { readOnly: true });
@@ -64,6 +64,7 @@ function pointBiserial(values, outcomes) {
 function trainingInput(row) {
   return {
     snapshotDate: row.snapshot_date,
+    analysisVersion: row.analysis_version,
     gameId: row.game_id,
     away: row.away,
     home: row.home,
@@ -88,9 +89,11 @@ function trainingInput(row) {
     total: row.total,
     lineupCoverageAway: row.lineup_coverage_away,
     lineupCoverageHome: row.lineup_coverage_home,
+    dataQuality: row.data_quality,
     heuristicPick: row.heuristic_pick,
     heuristicEdge: row.heuristic_edge,
     heuristicConfidence: row.heuristic_confidence,
+    predictionMethod: row.prediction_method,
     marketLean: row.market_lean,
     date: row.snapshot_date,
     awayScore: row.away_score,
@@ -101,7 +104,7 @@ function trainingInput(row) {
 
 function walkForwardBacktest(allRows, minimumTrainingRows = 60) {
   const predictions = [];
-  const trainingRows = buildRegressionTrainingRows(allRows.map(trainingInput));
+  const trainingRows = buildRegressionTrainingRows(allRows.map(trainingInput).filter(regressionTrainingEligible));
   const sourceByGameId = new Map(allRows.map((row) => [row.game_id, row]));
   const testDates = [...new Set(trainingRows.map((row) => row.snapshotDate))];
   testDates.forEach((date) => {
@@ -136,6 +139,7 @@ const marketDisagree = rows.filter((row) => row.market_lean && row.market_lean !
 const awayPicks = rows.filter((row) => row.heuristic_pick === row.away);
 const homePicks = rows.filter((row) => row.heuristic_pick === row.home);
 const walkForward = walkForwardBacktest(rows);
+const cleanTrainingRows = rows.map(trainingInput).filter(regressionTrainingEligible);
 const disagreementByEdge = Object.fromEntries([
   ["under3", (row) => row.heuristic_edge < 3],
   ["3to5", (row) => row.heuristic_edge >= 3 && row.heuristic_edge < 5],
@@ -168,6 +172,11 @@ console.log(JSON.stringify({
     heuristicAccuracyOnSameGames: round(accuracy(walkForward)),
     marketAccuracyOnSameGames: round(accuracy(walkForward.filter((row) => row.market_lean), (row) => row.market_lean)),
     confidenceSegments: regressionConfidenceSegments
+  },
+  trainingEligibility: {
+    allJoinedRows: rows.length,
+    eligibleJoinedRows: cleanTrainingRows.length,
+    excludedJoinedRows: rows.length - cleanTrainingRows.length
   },
   featureDiagnostics
 }, null, 2));

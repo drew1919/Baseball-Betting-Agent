@@ -87,6 +87,13 @@ export type RegressionReport = {
   trainingRows: number;
   resultRows: number;
   featureRows: number;
+  trainingEligibility?: {
+    totalFeatureRows: number;
+    eligibleFeatureRows: number;
+    excludedFeatureRows: number;
+    joinedEligibleRows: number;
+    minimumDataQuality: number;
+  };
   parkFactorCoverage: {
     populatedRows: number;
     coverageRate: number;

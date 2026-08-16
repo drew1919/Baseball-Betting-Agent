@@ -8,7 +8,7 @@ import { STATS, type BatterStat, type PitcherStat } from "./stats.js";
 import { getAugmentedStats, getExpectedStatsCsvPaths, getExpectedStatsCsvWritePaths } from "./augmented-stats.js";
 import { upsertWinnerFeatureSnapshots, upsertWinnerResults, readWinnerFeatureSnapshots, readWinnerResults, readProductionRegressionModel, readCandidateRegressionModel, writeCandidateRegressionModel, writeProductionRegressionModel, readProductionSelectiveRegressionModel, writeCandidateSelectiveRegressionModel, writeProductionSelectiveRegressionModel, readRegressionReport, writeRegressionReport, getStorageStatus, upsertFirstInningFeatureSnapshots, upsertFirstInningResults, readFirstInningFeatureSnapshots, readFirstInningResults } from "./feature-store.js";
 import { buildWinnerGameId, fetchWinnerScoreboard, type WinnerScoreboard } from "./results-fetcher.js";
-import { buildRegressionTrainingRows, FALLBACK_MARKET_WEIGHT, fallbackHomeWinProbability, MIN_REGRESSION_SAMPLE, predictHomeWinProbability, REGRESSION_FEATURE_NAMES, REGRESSION_FEATURE_VERSION, trainLogisticRegression } from "./regression-trainer.js";
+import { buildRegressionTrainingRows, FALLBACK_MARKET_WEIGHT, fallbackHomeWinProbability, MIN_REGRESSION_DATA_QUALITY, MIN_REGRESSION_SAMPLE, predictHomeWinProbability, REGRESSION_FEATURE_NAMES, REGRESSION_FEATURE_VERSION, regressionTrainingEligible, trainLogisticRegression } from "./regression-trainer.js";
 import { evaluateHeuristicBaseline, evaluateRegressionModel, evaluateWalkForwardRegression, QUALIFIED_CONFIDENCE_THRESHOLD, RECENT_VALIDATION_DATES } from "./model-evaluator.js";
 import type { RegressionReport, WinnerFeatureSnapshot } from "./regression-types.js";
 import { clampPlayerRating, lineupAdjustedTeamRating, sampleAdjustedPlayerRating } from "./rating-utils.js";
@@ -2760,6 +2760,7 @@ function averageOrNull(values: number[]) {
 
 async function refreshRegressionArtifacts() {
   const featureRows = readWinnerFeatureSnapshots();
+  const eligibleFeatureRows = featureRows.filter(regressionTrainingEligible);
   const today = new Date();
   const endDate = today.toISOString().slice(0, 10);
   const startDate = new Date(today);
@@ -2768,7 +2769,7 @@ async function refreshRegressionArtifacts() {
   const storedResultRows = upsertWinnerResults(scoreboard.results);
   upsertFirstInningResults(scoreboard.firstInningResults);
 
-  const featuresByGameId = new Map(featureRows.map((row) => [row.gameId, row]));
+  const featuresByGameId = new Map(eligibleFeatureRows.map((row) => [row.gameId, row]));
   const joined = storedResultRows
     .map((result) => {
       const feature = featuresByGameId.get(result.gameId);
@@ -2807,18 +2808,18 @@ async function refreshRegressionArtifacts() {
     ? evaluateRegressionModel(production, walkForwardRows)
     : null;
   const candidateMetrics = walkForward.metrics;
-  const parkRows = featureRows.filter((row) => row.parkIndex !== null);
+  const parkRows = eligibleFeatureRows.filter((row) => row.parkIndex !== null);
   const parkCoverage = {
     populatedRows: parkRows.length,
-    coverageRate: featureRows.length ? parkRows.length / featureRows.length : 0,
+    coverageRate: eligibleFeatureRows.length ? parkRows.length / eligibleFeatureRows.length : 0,
     averageParkIndex: averageOrNull(parkRows.map((row) => row.parkIndex as number)),
-    averageAwayParkRating: averageOrNull(featureRows.map((row) => row.awayPark)),
-    averageHomeParkRating: averageOrNull(featureRows.map((row) => row.homePark))
+    averageAwayParkRating: averageOrNull(eligibleFeatureRows.map((row) => row.awayPark)),
+    averageHomeParkRating: averageOrNull(eligibleFeatureRows.map((row) => row.homePark))
   };
-  const bullpenRows = featureRows.filter((row) => row.awayBullpen !== 50 || row.homeBullpen !== 50);
+  const bullpenRows = eligibleFeatureRows.filter((row) => row.awayBullpen !== 50 || row.homeBullpen !== 50);
   const bullpenCoverage = {
     populatedRows: bullpenRows.length,
-    coverageRate: featureRows.length ? bullpenRows.length / featureRows.length : 0,
+    coverageRate: eligibleFeatureRows.length ? bullpenRows.length / eligibleFeatureRows.length : 0,
     averageAwayBullpenRating: averageOrNull(bullpenRows.map((row) => row.awayBullpen)),
     averageHomeBullpenRating: averageOrNull(bullpenRows.map((row) => row.homeBullpen))
   };
@@ -2826,6 +2827,10 @@ async function refreshRegressionArtifacts() {
   let productionApproved = false;
   let selectiveProductionApproved = false;
   const notes: string[] = [];
+  const excludedFeatureRows = featureRows.length - eligibleFeatureRows.length;
+  if (excludedFeatureRows) {
+    notes.push(`${excludedFeatureRows} legacy or incomplete feature snapshots were excluded from regression training.`);
+  }
 
   if (candidate) {
     writeCandidateRegressionModel(candidate);
@@ -2883,7 +2888,7 @@ async function refreshRegressionArtifacts() {
   }
 
   if (trainingRows.length < MIN_REGRESSION_SAMPLE) {
-    notes.push(`Currently stored: ${featureRows.length} pregame snapshots, ${storedResultRows.length} final results, ${trainingRows.length} joined training rows.`);
+    notes.push(`Currently stored: ${featureRows.length} pregame snapshots, ${eligibleFeatureRows.length} training-eligible snapshots, ${storedResultRows.length} final results, ${trainingRows.length} eligible joined training rows.`);
   }
 
   const report: RegressionReport = {
@@ -2891,6 +2896,13 @@ async function refreshRegressionArtifacts() {
     trainingRows: trainingRows.length,
     resultRows: storedResultRows.length,
     featureRows: featureRows.length,
+    trainingEligibility: {
+      totalFeatureRows: featureRows.length,
+      eligibleFeatureRows: eligibleFeatureRows.length,
+      excludedFeatureRows: featureRows.length - eligibleFeatureRows.length,
+      joinedEligibleRows: trainingRows.length,
+      minimumDataQuality: MIN_REGRESSION_DATA_QUALITY
+    },
     parkFactorCoverage: parkCoverage,
     bullpenCoverage,
     heuristicMetrics,
@@ -3496,8 +3508,17 @@ app.get("/api/health", (_req, res) => {
       productionModel: Boolean(productionModel),
       selectiveProductionModel: Boolean(selectiveProductionModel),
       candidateModel: Boolean(candidateModel),
+      productionModelActive: Boolean(
+        productionModel?.featureVersion === REGRESSION_FEATURE_VERSION
+        && regressionReport?.productionApproved === true
+      ),
+      selectiveProductionModelActive: Boolean(
+        selectiveProductionModel?.featureVersion === REGRESSION_FEATURE_VERSION
+        && regressionReport?.selectiveProductionApproved === true
+      ),
       lastReportAt: regressionReport?.generatedAt || null,
       trainingRows: regressionReport?.trainingRows || 0,
+      trainingEligibility: regressionReport?.trainingEligibility || null,
       promotedCandidate: regressionReport?.promotedCandidate || false,
       productionApproved: regressionReport?.productionApproved ?? null,
       selectiveProductionApproved: regressionReport?.selectiveProductionApproved ?? null,

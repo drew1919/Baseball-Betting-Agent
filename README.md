@@ -4,6 +4,8 @@ A baseball betting analysis app that combines current MLB data, Statcast expecte
 
 Winner projections use the regression only after its training procedure beats the stored-pick baseline on chronologically later games. Approval must pass the full forward window, the latest five eligible slates, and a qualified-tier gate requiring at least 60% accuracy among at least 15 recent predictions rated 55% or higher. A recent accuracy drop automatically pauses production regression use and falls back to an 85% weighted-statistical probability plus a bounded 15% no-vig market sanity check. Missing odds return the fallback to 100% statistical. Probabilities are shrunk toward 50% to reduce overconfidence.
 
+Regression training accepts only versioned, non-legacy snapshots with modern probability semantics, finite model features, and evidence quality of at least 75%. Legacy rows remain in history for accountability and descriptive benchmarks, but cannot train, validate, or reactivate production. This prevents rows captured before bullpen, defense, evidence-quality, and immutable prediction fields existed from distorting current coefficients.
+
 The current MLB date is excluded from recent-slate approval until the slate is complete. Individual finals can enter model training immediately, but one early result cannot evict an entire older slate or toggle production approval intraday.
 
 Player-level expected-stat ratings use a 120-PA/BF reliability prior and bounded component ratings. This prevents a debut-sized Statcast sample from overpowering eight established lineup players or a full team pitching profile while preserving most of the signal for regulars with substantial samples.
