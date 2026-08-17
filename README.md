@@ -24,15 +24,17 @@ NRFI/YRFI uses both halves of inning one: the away offense against the home star
 
 The August winner heuristic uses this 100% core weighting:
 
-- Offense: 37%
-- Confirmed starting pitcher: 20%
+- Offense: 39%
+- Confirmed starting pitcher: 19%
 - Bullpen: 10%
-- Recent team form: 16%
+- Recent team form: 15%
 - Baseball Reference win-probability impact: 10%
 - Defense: 5%
 - Park factor: 2%
 
-Total pitching stays at 30%. The bullpen share is 7% in April-May, 9% in June-July, 10% in August, and 12% in September-October; starter weight moves inversely.
+Total pitching stays at 29%. The bullpen share is 7% in April-May, 9% in June-July, 10% in August, and 12% in September-October; starter weight moves inversely. These values normalize the requested 40/30/15/10/5 priorities after reserving 2% for park context.
+
+Player ratings are averaged across nine lineup positions, then the deviation from neutral is restored by `sqrt(9)` before applying the offense weight. Without this category-scale correction, averaging a full lineup compressed offense so heavily that the lower-weight trend category varied more in practice. The run-differential trend multiplier is bounded at `1.6` to keep recent form influential without letting it routinely overpower offense and pitching.
 
 Player form blends current-season expected statistics with measured MLB performance from the last 30 days. Recent samples are shrunk toward the season baseline when plate appearances or batters faced are small. Team form uses exponentially decayed results from the last ten games instead of overlapping last-1, last-3, and last-5 totals.
 
