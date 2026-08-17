@@ -164,7 +164,7 @@ export function selectRegressionFeatureNames(
 
 export function fallbackHomeWinProbability(
   row: WinnerFeatureSnapshot,
-  marketWeight = FALLBACK_MARKET_WEIGHT
+  marketWeight = row.marketWeight ?? FALLBACK_MARKET_WEIGHT
 ) {
   const signedEdge = row.heuristicPick === row.home ? row.heuristicEdge : -row.heuristicEdge;
   const rawStatistical = sigmoid(signedEdge * 0.14);
