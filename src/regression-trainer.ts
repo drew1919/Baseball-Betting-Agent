@@ -16,8 +16,8 @@ const FEATURE_NAMES = [
 export type RegressionFeatureName = typeof FEATURE_NAMES[number];
 export const REGRESSION_FEATURE_NAMES: readonly RegressionFeatureName[] = FEATURE_NAMES;
 
-// Version 5 requires complete structural inputs and unambiguous game identity.
-export const REGRESSION_FEATURE_VERSION = 5;
+// Version 6 uses category-scale-corrected offense and trend features.
+export const REGRESSION_FEATURE_VERSION = 6;
 export const MIN_REGRESSION_SAMPLE = 200;
 export const MIN_REGRESSION_DATA_QUALITY = 0.75;
 export const FALLBACK_MARKET_WEIGHT = 0.15;

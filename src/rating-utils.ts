@@ -30,3 +30,19 @@ export function lineupAdjustedTeamRating(
     + missingPlayers * neutralRating;
   return total / boundedExpectedPlayers;
 }
+
+export function lineupCategoryRating(
+  playerRatings: number[],
+  expectedPlayers = 9,
+  neutralRating = 50
+) {
+  const boundedExpectedPlayers = Math.max(1, Math.floor(expectedPlayers));
+  const lineupAverage = lineupAdjustedTeamRating(playerRatings, boundedExpectedPlayers, neutralRating);
+  // Averaging nine hitters compresses category variance by roughly sqrt(n).
+  // Restore that team-level scale before applying the category weight.
+  return clampPlayerRating(
+    neutralRating + (lineupAverage - neutralRating) * Math.sqrt(boundedExpectedPlayers),
+    35,
+    70
+  );
+}

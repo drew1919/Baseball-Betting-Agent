@@ -11,7 +11,7 @@ import { buildWinnerGameId, fetchWinnerScoreboard, type WinnerScoreboard } from 
 import { buildRegressionTrainingRows, FALLBACK_MARKET_WEIGHT, fallbackHomeWinProbability, MIN_REGRESSION_DATA_QUALITY, MIN_REGRESSION_SAMPLE, predictHomeWinProbability, REGRESSION_FEATURE_NAMES, REGRESSION_FEATURE_VERSION, regressionFeatureDiagnostics, regressionTrainingEligible, trainLogisticRegression } from "./regression-trainer.js";
 import { evaluateHeuristicBaseline, evaluateRegressionModel, evaluateWalkForwardRegression, QUALIFIED_CONFIDENCE_THRESHOLD, RECENT_VALIDATION_DATES } from "./model-evaluator.js";
 import type { RegressionReport, WinnerFeatureSnapshot } from "./regression-types.js";
-import { clampPlayerRating, lineupAdjustedTeamRating, sampleAdjustedPlayerRating } from "./rating-utils.js";
+import { clampPlayerRating, lineupCategoryRating, sampleAdjustedPlayerRating } from "./rating-utils.js";
 import { MIN_TRAINING_LINEUP_COVERAGE, shrinkProbabilityToEven, winnerEvidenceQuality } from "./prediction-quality.js";
 import type { FirstInningFeatureSnapshot, FirstInningPerformance, FirstInningPick } from "./first-inning-types.js";
 import { evaluateFirstInningPerformance } from "./first-inning-evaluator.js";
@@ -24,7 +24,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(process.cwd(), "public")));
 
 const PORT = process.env.PORT || 3000;
-const ANALYSIS_VERSION = "models-v8.7.1-market-sanity";
+const ANALYSIS_VERSION = "models-v8.8-category-scale";
 const CURRENT_SEASON = new Date().getFullYear();
 const PREVIOUS_SEASON = CURRENT_SEASON - 1;
 
@@ -2275,7 +2275,7 @@ async function combinedNrfiScore(game: MatchedGameContext) {
 
 function rankOffense(lineup: BatterStat[], recentStats = new Map<string, RecentBatterStat>()) {
   if (!lineup.length) return 50;
-  return lineupAdjustedTeamRating(
+  return lineupCategoryRating(
     lineup.map((batter) => {
       const rawSeasonRating = 50
         + (batter.xwoba - 0.320) * 90
@@ -2370,10 +2370,10 @@ function winnerWeights(date = new Date()) {
   const month = date.getMonth() + 1;
   const bullpen = month <= 5 ? 0.07 : month <= 7 ? 0.09 : month === 8 ? 0.10 : 0.12;
   return {
-    offense: 0.37,
-    starter: 0.30 - bullpen,
+    offense: 0.39,
+    starter: 0.29 - bullpen,
     bullpen,
-    trend: 0.16,
+    trend: 0.15,
     winProb: 0.10,
     defense: 0.05,
     park: 0.02
@@ -2381,7 +2381,7 @@ function winnerWeights(date = new Date()) {
 }
 
 function trendRating(score: number) {
-  return Math.max(30, Math.min(80, 50 + score * 2.2));
+  return Math.max(35, Math.min(70, 50 + score * 1.6));
 }
 
 function winProbRating(batting: TeamWinProbStat | null, pitching: TeamWinProbStat | null) {
@@ -2879,9 +2879,9 @@ function observedStandardDeviation(values: number[]) {
 
 function componentContributionDiagnostics(rows: WinnerFeatureSnapshot[]) {
   const contributions = [
-    { component: "offense", configuredWeight: 0.37, values: [] as number[] },
-    { component: "pitching", configuredWeight: 0.30, values: [] as number[] },
-    { component: "trend", configuredWeight: 0.16, values: [] as number[] },
+    { component: "offense", configuredWeight: 0.39, values: [] as number[] },
+    { component: "pitching", configuredWeight: 0.29, values: [] as number[] },
+    { component: "trend", configuredWeight: 0.15, values: [] as number[] },
     { component: "winProbability", configuredWeight: 0.10, values: [] as number[] },
     { component: "defense", configuredWeight: 0.05, values: [] as number[] },
     { component: "park", configuredWeight: 0.02, values: [] as number[] }
@@ -3321,7 +3321,7 @@ async function analyzeWinner(game: MatchedGameContext) {
       oddsLine,
       `Prediction engine: **${prediction.method}**. Conservative win-probability estimate: **${formatNumber(prediction.confidence)}%** for ${lean}. The statistical core preferred **${prediction.heuristicPick}**${breakdown.marketLean ? ` and the no-vig market side is **${breakdown.marketLean}**` : ""}.`,
       `Evidence quality: **${formatNumber(prediction.dataQuality * 100, 0)}%**${prediction.dataQualityNotes.length ? ` (${prediction.dataQualityNotes.join(", ")})` : " (complete)"}. Missing evidence shrinks certainty toward 50% but does not replace the model's preferred side.`,
-      `The statistical core is offense ${formatNumber(breakdown.weights.offense * 100, 0)}%, total pitching 30% (starter ${formatNumber(breakdown.weights.starter * 100, 0)}% + bullpen ${formatNumber(breakdown.weights.bullpen * 100, 0)}%), recency/trend ${formatNumber(breakdown.weights.trend * 100, 0)}%, win-probability 10%, defense 5%, and park 2%. When regression is paused and odds exist, that core supplies 85% of the final probability and the no-vig market supplies a bounded 15% sanity check.`,
+      `The statistical core is offense ${formatNumber(breakdown.weights.offense * 100, 0)}%, total pitching ${formatNumber((breakdown.weights.starter + breakdown.weights.bullpen) * 100, 0)}% (starter ${formatNumber(breakdown.weights.starter * 100, 0)}% + bullpen ${formatNumber(breakdown.weights.bullpen * 100, 0)}%), recency/trend ${formatNumber(breakdown.weights.trend * 100, 0)}%, win-probability 10%, defense 5%, and park 2%. When regression is paused and odds exist, that core supplies 85% of the final probability and the no-vig market supplies a bounded 15% sanity check.`,
     `${game.awayBatters.length && game.homeBatters.length ? "This read is using matched lineup bats from the selected game context." : "Lineup coverage is partial, so treat this as a softer lean."}`,
     `${tag} Recommendation: **${lean}** moneyline at **${formatNumber(prediction.confidence)}%** model confidence. ${prediction.validatedStrong ? "This clears the dual-model rolling-forward best-bet tier." : "This is a full-slate projection, not a validated high-confidence best bet."}`
   ].join("\n\n");

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { clampPlayerRating, lineupAdjustedTeamRating, sampleAdjustedPlayerRating } from "../dist/rating-utils.js";
+import { clampPlayerRating, lineupAdjustedTeamRating, lineupCategoryRating, sampleAdjustedPlayerRating } from "../dist/rating-utils.js";
 import { shrinkProbabilityToEven, winnerEvidenceQuality } from "../dist/prediction-quality.js";
 import { evaluateFirstInningPerformance } from "../dist/first-inning-evaluator.js";
 import { MIN_REGRESSION_SAMPLE, regressionFeatureDiagnostics, regressionTrainingEligible, trainLogisticRegression } from "../dist/regression-trainer.js";
@@ -22,6 +22,9 @@ assert.equal(clampPlayerRating(-25), 30);
 
 assert.equal(lineupAdjustedTeamRating([70], 9), 470 / 9);
 assert.equal(lineupAdjustedTeamRating(Array(9).fill(55), 9), 55);
+assert.equal(lineupCategoryRating(Array(9).fill(51), 9), 53);
+assert.equal(lineupCategoryRating(Array(9).fill(49), 9), 47);
+assert.ok(Math.abs(lineupCategoryRating([60], 9) - (50 + (10 / 9) * 3)) < 1e-10);
 
 const completeEvidence = winnerEvidenceQuality({
   awayLineupCoverage: 1,
