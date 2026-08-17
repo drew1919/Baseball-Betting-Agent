@@ -17,6 +17,7 @@ export type WinnerEvidenceQuality = {
 };
 
 export const MIN_TRAINING_LINEUP_COVERAGE = 7 / 9;
+export const ESTIMATED_MARKET_RELIABILITY = 0.6;
 
 function clampUnit(value: number) {
   return Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0));
@@ -26,7 +27,7 @@ export function winnerEvidenceQuality(input: WinnerEvidenceInput): WinnerEvidenc
   const lineupCoverage = (clampUnit(input.awayLineupCoverage) + clampUnit(input.homeLineupCoverage)) / 2;
   const starterCoverage = (clampUnit(input.awayStarterQuality) + clampUnit(input.homeStarterQuality)) / 2;
   const bullpenCoverage = (Number(input.awayBullpenAvailable) + Number(input.homeBullpenAvailable)) / 2;
-  const marketCoverage = input.marketAvailable ? (input.marketEstimated ? 0.6 : 1) : 0;
+  const marketCoverage = input.marketAvailable ? (input.marketEstimated ? ESTIMATED_MARKET_RELIABILITY : 1) : 0;
   const score = lineupCoverage * 0.45
     + starterCoverage * 0.25
     + bullpenCoverage * 0.15

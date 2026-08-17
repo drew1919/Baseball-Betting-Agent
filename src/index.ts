@@ -12,7 +12,7 @@ import { buildRegressionTrainingRows, FALLBACK_MARKET_WEIGHT, fallbackHomeWinPro
 import { evaluateHeuristicBaseline, evaluateRegressionModel, evaluateWalkForwardRegression, QUALIFIED_CONFIDENCE_THRESHOLD, RECENT_VALIDATION_DATES } from "./model-evaluator.js";
 import type { RegressionReport, WinnerFeatureSnapshot } from "./regression-types.js";
 import { clampPlayerRating, lineupCategoryRating, sampleAdjustedPlayerRating } from "./rating-utils.js";
-import { MIN_TRAINING_LINEUP_COVERAGE, shrinkProbabilityToEven, winnerEvidenceQuality } from "./prediction-quality.js";
+import { ESTIMATED_MARKET_RELIABILITY, MIN_TRAINING_LINEUP_COVERAGE, shrinkProbabilityToEven, winnerEvidenceQuality } from "./prediction-quality.js";
 import type { FirstInningFeatureSnapshot, FirstInningPerformance, FirstInningPick } from "./first-inning-types.js";
 import { evaluateFirstInningPerformance } from "./first-inning-evaluator.js";
 import { parsePlausibleAmericanMoneyline } from "./odds-utils.js";
@@ -24,7 +24,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(process.cwd(), "public")));
 
 const PORT = process.env.PORT || 3000;
-const ANALYSIS_VERSION = "models-v8.8-category-scale";
+const ANALYSIS_VERSION = "models-v8.8.1-estimated-market-weight";
 const CURRENT_SEASON = new Date().getFullYear();
 const PREVIOUS_SEASON = CURRENT_SEASON - 1;
 
@@ -2615,6 +2615,7 @@ function winnerPrediction(game: MatchedGameContext, breakdown: Awaited<ReturnTyp
       selectiveConfidence: null,
       heuristicPick: snapshot.heuristicPick,
       marketHomeProbability,
+      marketWeight: snapshot.marketWeight ?? null,
       dataQuality: snapshot.dataQuality ?? breakdown.dataQuality.score,
       dataQualityNotes: snapshot.dataQualityNotes ?? breakdown.dataQuality.notes
     };
@@ -2664,13 +2665,18 @@ function winnerPrediction(game: MatchedGameContext, breakdown: Awaited<ReturnTyp
     heuristicPick: breakdown.lean,
     heuristicEdge: Math.abs(breakdown.edge),
     heuristicConfidence: Math.max(statisticalHomeProbability, 1 - statisticalHomeProbability) * 100,
+    marketWeight: marketHomeProbability === null
+      ? null
+      : FALLBACK_MARKET_WEIGHT * (breakdown.odds?.estimated ? ESTIMATED_MARKET_RELIABILITY : 1),
     marketLean: breakdown.marketLean
   };
 
   let homeProbability = fallbackHomeWinProbability(snapshot);
   let method = marketHomeProbability === null
     ? "conservative weighted-statistical model"
-    : "85% statistical model + 15% market sanity check";
+    : breakdown.odds?.estimated
+      ? "91% statistical model + 9% estimated market sanity check"
+      : "85% statistical model + 15% market sanity check";
   if (usableModel) {
     const regressionProbability = predictHomeWinProbability(usableModel, snapshot);
     if (Number.isFinite(regressionProbability)) {
@@ -2711,6 +2717,7 @@ function winnerPrediction(game: MatchedGameContext, breakdown: Awaited<ReturnTyp
     selectiveConfidence,
     heuristicPick: breakdown.lean,
     marketHomeProbability,
+    marketWeight: snapshot.marketWeight ?? null,
     dataQuality: breakdown.dataQuality.score,
     dataQualityNotes: breakdown.dataQuality.notes
   };
@@ -2769,9 +2776,7 @@ async function buildWinnerFeatureSnapshot(game: MatchedGameContext, snapshotDate
     predictionMethod: prediction.method,
     wagerQualified: prediction.validatedStrong,
     selectiveConfidence: prediction.selectiveConfidence,
-    marketWeight: prediction.method === "85% statistical model + 15% market sanity check"
-      ? FALLBACK_MARKET_WEIGHT
-      : null,
+    marketWeight: prediction.marketWeight,
     marketLean: breakdown.marketLean
   };
 }
@@ -3321,7 +3326,7 @@ async function analyzeWinner(game: MatchedGameContext) {
       oddsLine,
       `Prediction engine: **${prediction.method}**. Conservative win-probability estimate: **${formatNumber(prediction.confidence)}%** for ${lean}. The statistical core preferred **${prediction.heuristicPick}**${breakdown.marketLean ? ` and the no-vig market side is **${breakdown.marketLean}**` : ""}.`,
       `Evidence quality: **${formatNumber(prediction.dataQuality * 100, 0)}%**${prediction.dataQualityNotes.length ? ` (${prediction.dataQualityNotes.join(", ")})` : " (complete)"}. Missing evidence shrinks certainty toward 50% but does not replace the model's preferred side.`,
-      `The statistical core is offense ${formatNumber(breakdown.weights.offense * 100, 0)}%, total pitching ${formatNumber((breakdown.weights.starter + breakdown.weights.bullpen) * 100, 0)}% (starter ${formatNumber(breakdown.weights.starter * 100, 0)}% + bullpen ${formatNumber(breakdown.weights.bullpen * 100, 0)}%), recency/trend ${formatNumber(breakdown.weights.trend * 100, 0)}%, win-probability 10%, defense 5%, and park 2%. When regression is paused and odds exist, that core supplies 85% of the final probability and the no-vig market supplies a bounded 15% sanity check.`,
+      `The statistical core is offense ${formatNumber(breakdown.weights.offense * 100, 0)}%, total pitching ${formatNumber((breakdown.weights.starter + breakdown.weights.bullpen) * 100, 0)}% (starter ${formatNumber(breakdown.weights.starter * 100, 0)}% + bullpen ${formatNumber(breakdown.weights.bullpen * 100, 0)}%), recency/trend ${formatNumber(breakdown.weights.trend * 100, 0)}%, win-probability 10%, defense 5%, and park 2%. When regression is paused, ${prediction.marketWeight === null ? "missing odds leave the result 100% statistical" : `the statistical core supplies ${formatNumber((1 - prediction.marketWeight) * 100, 0)}% and the market sanity check supplies ${formatNumber(prediction.marketWeight * 100, 0)}%`} before evidence-quality shrinkage.`,
     `${game.awayBatters.length && game.homeBatters.length ? "This read is using matched lineup bats from the selected game context." : "Lineup coverage is partial, so treat this as a softer lean."}`,
     `${tag} Recommendation: **${lean}** moneyline at **${formatNumber(prediction.confidence)}%** model confidence. ${prediction.validatedStrong ? "This clears the dual-model rolling-forward best-bet tier." : "This is a full-slate projection, not a validated high-confidence best bet."}`
   ].join("\n\n");
@@ -3665,6 +3670,7 @@ app.get("/api/health", (_req, res) => {
     oddsFallback: "RotoWire listed moneyline (estimated no-vig)",
     rotowireMarketShrink: ROTOWIRE_MARKET_SHRINK,
     fallbackMarketWeight: FALLBACK_MARKET_WEIGHT,
+    estimatedFallbackMarketWeight: FALLBACK_MARKET_WEIGHT * ESTIMATED_MARKET_RELIABILITY,
     statCounts: {
       batters: stats.batters.length,
       pitchers: stats.pitchers.length

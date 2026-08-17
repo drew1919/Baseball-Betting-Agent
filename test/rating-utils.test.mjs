@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { clampPlayerRating, lineupAdjustedTeamRating, lineupCategoryRating, sampleAdjustedPlayerRating } from "../dist/rating-utils.js";
 import { shrinkProbabilityToEven, winnerEvidenceQuality } from "../dist/prediction-quality.js";
 import { evaluateFirstInningPerformance } from "../dist/first-inning-evaluator.js";
-import { MIN_REGRESSION_SAMPLE, regressionFeatureDiagnostics, regressionTrainingEligible, trainLogisticRegression } from "../dist/regression-trainer.js";
+import { fallbackHomeWinProbability, MIN_REGRESSION_SAMPLE, regressionFeatureDiagnostics, regressionTrainingEligible, trainLogisticRegression } from "../dist/regression-trainer.js";
 import { buildWinnerGameId, fetchWinnerScoreboard } from "../dist/results-fetcher.js";
 import { parsePlausibleAmericanMoneyline } from "../dist/odds-utils.js";
 
@@ -88,6 +88,23 @@ assert.equal(parsePlausibleAmericanMoneyline("BAL -1981"), null);
 assert.equal(parsePlausibleAmericanMoneyline("BAL -1150"), null);
 assert.equal(parsePlausibleAmericanMoneyline("BAL -99"), null);
 assert.equal(parsePlausibleAmericanMoneyline("BAL 145"), null);
+
+const fallbackProbabilityRow = {
+  home: "HOME",
+  heuristicPick: "HOME",
+  heuristicEdge: 2,
+  awayMoneyline: 150,
+  homeMoneyline: -150
+};
+const statisticalOnlyProbability = fallbackHomeWinProbability({
+  ...fallbackProbabilityRow,
+  awayMoneyline: null,
+  homeMoneyline: null
+});
+const estimatedMarketProbability = fallbackHomeWinProbability({ ...fallbackProbabilityRow, marketWeight: 0.09 });
+const fullMarketProbability = fallbackHomeWinProbability({ ...fallbackProbabilityRow, marketWeight: 0.15 });
+assert.ok(estimatedMarketProbability > statisticalOnlyProbability);
+assert.ok(estimatedMarketProbability < fullMarketProbability);
 
 function firstInningRows(totalGames, correctnessForIndex) {
   const snapshots = [];
