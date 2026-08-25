@@ -16,6 +16,8 @@ The current MLB date is excluded from recent-slate approval until the slate is c
 
 Player-level expected-stat ratings use a 120-PA/BF reliability prior and bounded component ratings. This prevents a debut-sized Statcast sample from overpowering eight established lineup players or a full team pitching profile while preserving most of the signal for regulars with substantial samples.
 
+The daily player universe comes from Baseball Savant's measured custom leaderboards, not the original demo rows. The refresh persists current-season PA/BF, K%, BB%, xBA, xSLG, xwOBA, batted-ball quality, whiff, swing, and bat-tracking fields for every returned batter and pitcher. Static seed players are used only when no persisted Savant feed exists; once a healthy feed is present, it replaces the seed universe completely. Each row carries source and refresh-time provenance, and pitcher strikeout scoring uses rate-normalized chase misses and swords rather than workload-sensitive season totals.
+
 Missing lineup slots are scored at a neutral 50 rather than allowing a partial lineup to represent the whole offense. Each winner snapshot also records an evidence-quality score based on lineup coverage, starter Statcast coverage, bullpen availability, market availability, and lineup confirmation. Low-quality games still receive a forced full-slate lean, but their probability edge is shrunk toward 50% and they are not presented as validated high-confidence bets.
 
 Complete-slate winner requests use the primary regression. Winner recommendations can enter `best bets` only when an independently trained no-total selective regression is also approved, rates the same side at 55% or higher, and agrees with a 55%+ primary prediction. This keeps forced projections visible without treating them as equally bettable.
@@ -75,8 +77,8 @@ Open [http://localhost:3000](http://localhost:3000).
 | `PORT` | No | `3000` | HTTP port |
 | `ODDS_API_KEY` | No | None | The-Odds-API key for live lines |
 | `ODDS_BOOKMAKER` | No | `fanduel` | Preferred bookmaker |
-| `EXPECTED_BATTERS_CSV_PATH` | No | `data/expected_stats_batters.csv` | Optional custom expected-stat CSV path |
-| `EXPECTED_PITCHERS_CSV_PATH` | No | `data/expected_stats_pitchers.csv` | Optional custom expected-stat CSV path |
+| `EXPECTED_BATTERS_CSV_PATH` | No | `data/expected_stats_batters.csv` | Optional path for the persisted measured Savant batter feed |
+| `EXPECTED_PITCHERS_CSV_PATH` | No | `data/expected_stats_pitchers.csv` | Optional path for the persisted measured Savant pitcher feed |
 
 The analysis engine runs without API keys. When primary two-sided odds are unavailable, winner analysis uses RotoWire's listed pregame moneyline and an empirically fitted hold correction to estimate a complementary no-vig market probability. The market remains one bounded model input; it does not replace the statistical engine.
 
@@ -86,7 +88,7 @@ The analysis engine runs without API keys. When primary two-sided odds are unava
 - RotoWire lineups are polled immediately after startup refresh and every ten minutes thereafter. Immutable winner and first-inning snapshots are created only after both batting orders are confirmed and MLB still reports the game as scheduled.
 - `/api/chat` triggers a guarded refresh when model data is older than eight hours or expected-stat CSVs are stale.
 - Failed refreshes are throttled and retain the last known-good files.
-- Expected-stat files are validated for minimum coverage and replaced atomically; empty scraper output cannot overwrite good data.
+- Measured Savant player files are validated for row count, player identity, and core K%, xwOBA, hard-hit, and barrel coverage before atomic replacement; incomplete scraper output cannot overwrite good data.
 - Source attempts, successes, row counts, errors, ages, and stale flags are exposed through `/api/health`.
 - The first confirmed-lineup pregame feature snapshot for a matchup/date is immutable. Page loads and later refreshes cannot rewrite history with in-game or postgame data.
 - First-time snapshots are created only while MLB reports a game as scheduled. Once play begins, winner analysis keeps the immutable pregame pick and market input rather than consuming moving in-game lines.

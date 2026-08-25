@@ -2,47 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { type BatterStat, type PitcherStat } from "./stats.js";
 
-type BaseStats = {
-  batters: BatterStat[];
-  pitchers: PitcherStat[];
-};
-
-type ExpectedBatterRow = {
-  ["last_name, first_name"]: string;
-  player_id: number;
-  year: number;
-  pa: number;
-  bip: number;
-  ba: number;
-  est_ba: number;
-  est_ba_minus_ba_diff: number;
-  slg: number;
-  est_slg: number;
-  est_slg_minus_slg_diff: number;
-  woba: number;
-  est_woba: number;
-  est_woba_minus_woba_diff: number;
-};
-
-type ExpectedPitcherRow = {
-  ["last_name, first_name"]: string;
-  player_id: number;
-  year: number;
-  pa: number;
-  bip: number;
-  ba: number;
-  est_ba: number;
-  est_ba_minus_ba_diff: number;
-  slg: number;
-  est_slg: number;
-  est_slg_minus_slg_diff: number;
-  woba: number;
-  est_woba: number;
-  est_woba_minus_woba_diff: number;
-  era: number;
-  xera: number;
-  era_minus_xera_diff: number;
-};
+type BaseStats = { batters: BatterStat[]; pitchers: PitcherStat[] };
 
 export type AugmentedStats = {
   batters: BatterStat[];
@@ -52,6 +12,8 @@ export type AugmentedStats = {
     basePitchers: number;
     expectedBatters: number;
     expectedPitchers: number;
+    measuredBatters: number;
+    measuredPitchers: number;
     mergedBatters: number;
     mergedPitchers: number;
     overriddenBatters: number;
@@ -79,29 +41,13 @@ let cache: CacheEntry | null = null;
 const WORKSPACE_BATTER_CSV_PATH = path.join(process.cwd(), "data", "expected_stats_batters.csv");
 const WORKSPACE_PITCHER_CSV_PATH = path.join(process.cwd(), "data", "expected_stats_pitchers.csv");
 
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
 function cleanText(value = "") {
   return String(value).replace(/\s+/g, " ").trim();
 }
 
 function normalizeName(value: string) {
-  return String(value)
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9 ]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function toNumber(value: string) {
-  const cleaned = cleanText(value).replace(/,/g, "");
-  if (!cleaned) return 0;
-  const numeric = Number(cleaned);
-  return Number.isFinite(numeric) ? numeric : 0;
+  return String(value).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function parseCsv(content: string) {
@@ -109,227 +55,186 @@ function parseCsv(content: string) {
   let row: string[] = [];
   let cell = "";
   let inQuotes = false;
-
   for (let index = 0; index < content.length; index += 1) {
     const char = content[index];
     const next = content[index + 1];
-
     if (char === "\"") {
-      if (inQuotes && next === "\"") {
-        cell += "\"";
-        index += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
+      if (inQuotes && next === "\"") { cell += "\""; index += 1; } else inQuotes = !inQuotes;
       continue;
     }
-
-    if (char === "," && !inQuotes) {
-      row.push(cell);
-      cell = "";
-      continue;
-    }
-
+    if (char === "," && !inQuotes) { row.push(cell); cell = ""; continue; }
     if ((char === "\n" || char === "\r") && !inQuotes) {
-      if (char === "\r" && next === "\n") {
-        index += 1;
-      }
+      if (char === "\r" && next === "\n") index += 1;
       row.push(cell);
-      if (row.some((value) => value.length > 0)) {
-        rows.push(row);
-      }
+      if (row.some((value) => value.length > 0)) rows.push(row);
       row = [];
       cell = "";
       continue;
     }
-
     cell += char;
   }
-
   if (cell.length > 0 || row.length > 0) {
     row.push(cell);
-    if (row.some((value) => value.length > 0)) {
-      rows.push(row);
-    }
+    if (row.some((value) => value.length > 0)) rows.push(row);
   }
-
   return rows;
 }
 
 function parseCsvObjects(filePath: string) {
-  const content = fs.readFileSync(filePath, "utf8");
-  const rows = parseCsv(content);
+  const rows = parseCsv(fs.readFileSync(filePath, "utf8"));
   if (!rows.length) return [];
-  const [headerRow, ...dataRows] = rows;
-
+  const [headers, ...dataRows] = rows;
   return dataRows.map((dataRow) => {
     const record: Record<string, string> = {};
-    headerRow.forEach((header, index) => {
-      record[cleanText(header)] = cleanText(dataRow[index] || "");
-    });
+    headers.forEach((header, index) => { record[cleanText(header)] = cleanText(dataRow[index] || ""); });
     return record;
   });
 }
 
+function rowNumber(row: Record<string, string>, keys: string[], fallback: number) {
+  for (const key of keys) {
+    const value = cleanText(row[key] || "").replace(/,/g, "");
+    if (!value) continue;
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return fallback;
+}
+
+function measuredRow(row: Record<string, string>) {
+  return row.statcast_measured === "true" || row.data_source === "baseball_savant_custom";
+}
+
+function provenance(row: Record<string, string>) {
+  const measured = measuredRow(row);
+  return {
+    data_source: row.data_source || (measured ? "baseball_savant_custom" : "savant_expected_only"),
+    data_updated_at: row.data_updated_at || "",
+    statcast_measured: measured
+  };
+}
+
+function materializeBatter(row: Record<string, string>): BatterStat {
+  const pa = rowNumber(row, ["pa"], 0);
+  const battingAvg = rowNumber(row, ["batting_avg", "ba"], 0);
+  const xba = rowNumber(row, ["xba", "est_ba"], battingAvg);
+  const xslg = rowNumber(row, ["xslg", "est_slg"], Math.max(xba, 0.38));
+  const woba = rowNumber(row, ["woba"], 0.31);
+  const xwoba = rowNumber(row, ["xwoba", "est_woba"], woba);
+  return {
+    ["last_name, first_name"]: row["last_name, first_name"] || "",
+    player_id: rowNumber(row, ["player_id"], 0),
+    year: rowNumber(row, ["year"], new Date().getFullYear()),
+    pa,
+    hit: rowNumber(row, ["hit"], Math.round(battingAvg * pa)),
+    home_run: rowNumber(row, ["home_run"], 0),
+    k_percent: rowNumber(row, ["k_percent"], 22.5),
+    bb_percent: rowNumber(row, ["bb_percent"], 8.5),
+    batting_avg: battingAvg,
+    xba,
+    xslg,
+    woba,
+    xwoba,
+    xobp: rowNumber(row, ["xobp"], 0.32),
+    xiso: rowNumber(row, ["xiso"], Math.max(0, xslg - xba)),
+    avg_swing_speed: rowNumber(row, ["avg_swing_speed"], 71.5),
+    fast_swing_rate: rowNumber(row, ["fast_swing_rate"], 20),
+    blasts_contact: rowNumber(row, ["blasts_contact"], 10),
+    blasts_swing: rowNumber(row, ["blasts_swing"], 7),
+    squared_up_contact: rowNumber(row, ["squared_up_contact"], 30),
+    squared_up_swing: rowNumber(row, ["squared_up_swing"], 22),
+    avg_swing_length: rowNumber(row, ["avg_swing_length"], 7.2),
+    swords: rowNumber(row, ["swords"], 0),
+    attack_angle: rowNumber(row, ["attack_angle"], 10),
+    attack_direction: rowNumber(row, ["attack_direction"], 0),
+    ideal_angle_rate: rowNumber(row, ["ideal_angle_rate"], 50),
+    vertical_swing_path: rowNumber(row, ["vertical_swing_path"], 31),
+    exit_velocity_avg: rowNumber(row, ["exit_velocity_avg"], 88.5),
+    launch_angle_avg: rowNumber(row, ["launch_angle_avg"], 12),
+    sweet_spot_percent: rowNumber(row, ["sweet_spot_percent"], 33),
+    barrel_batted_rate: rowNumber(row, ["barrel_batted_rate"], 7),
+    solidcontact_percent: rowNumber(row, ["solidcontact_percent"], 5),
+    hard_hit_percent: rowNumber(row, ["hard_hit_percent"], 38),
+    avg_best_speed: rowNumber(row, ["avg_best_speed"], 99),
+    avg_hyper_speed: rowNumber(row, ["avg_hyper_speed"], 94),
+    whiff_percent: rowNumber(row, ["whiff_percent"], 24),
+    swing_percent: rowNumber(row, ["swing_percent"], 47),
+    ...provenance(row)
+  };
+}
+
+function materializePitcher(row: Record<string, string>): PitcherStat {
+  const pa = rowNumber(row, ["pa"], 0);
+  const swords = rowNumber(row, ["swords"], 0);
+  const outZoneSwingMiss = rowNumber(row, ["out_zone_swing_miss"], 0);
+  const xba = rowNumber(row, ["xba", "est_ba"], 0.245);
+  const xslg = rowNumber(row, ["xslg", "est_slg"], 0.4);
+  const woba = rowNumber(row, ["woba"], 0.31);
+  const xwoba = rowNumber(row, ["xwoba", "est_woba"], woba);
+  return {
+    ["last_name, first_name"]: row["last_name, first_name"] || "",
+    player_id: rowNumber(row, ["player_id"], 0),
+    year: rowNumber(row, ["year"], new Date().getFullYear()),
+    pa,
+    k_percent: rowNumber(row, ["k_percent"], 22.5),
+    bb_percent: rowNumber(row, ["bb_percent"], 8.5),
+    xba,
+    xslg,
+    woba,
+    xwoba,
+    xobp: rowNumber(row, ["xobp"], 0.32),
+    xiso: rowNumber(row, ["xiso"], Math.max(0, xslg - xba)),
+    avg_swing_speed: rowNumber(row, ["avg_swing_speed"], 71.5),
+    fast_swing_rate: rowNumber(row, ["fast_swing_rate"], 20),
+    blasts_contact: rowNumber(row, ["blasts_contact"], 10),
+    blasts_swing: rowNumber(row, ["blasts_swing"], 7),
+    squared_up_contact: rowNumber(row, ["squared_up_contact"], 30),
+    squared_up_swing: rowNumber(row, ["squared_up_swing"], 22),
+    avg_swing_length: rowNumber(row, ["avg_swing_length"], 7.2),
+    swords,
+    attack_angle: rowNumber(row, ["attack_angle"], 10),
+    attack_direction: rowNumber(row, ["attack_direction"], 0),
+    ideal_angle_rate: rowNumber(row, ["ideal_angle_rate"], 50),
+    vertical_swing_path: rowNumber(row, ["vertical_swing_path"], 31),
+    exit_velocity_avg: rowNumber(row, ["exit_velocity_avg"], 88.5),
+    launch_angle_avg: rowNumber(row, ["launch_angle_avg"], 12),
+    sweet_spot_percent: rowNumber(row, ["sweet_spot_percent"], 33),
+    barrel_batted_rate: rowNumber(row, ["barrel_batted_rate"], 7),
+    hard_hit_percent: rowNumber(row, ["hard_hit_percent"], 38),
+    avg_best_speed: rowNumber(row, ["avg_best_speed"], 79),
+    avg_hyper_speed: rowNumber(row, ["avg_hyper_speed"], 94),
+    z_swing_percent: rowNumber(row, ["z_swing_percent"], 67),
+    out_zone_swing_miss: outZoneSwingMiss,
+    out_zone_swing_miss_percent: rowNumber(row, ["out_zone_swing_miss_percent"], pa ? outZoneSwingMiss / pa * 100 : 0),
+    swords_per_100_pa: rowNumber(row, ["swords_per_100_pa"], pa ? swords / pa * 100 : 0),
+    whiff_percent: rowNumber(row, ["whiff_percent"], 24),
+    swing_percent: rowNumber(row, ["swing_percent"], 47),
+    ...provenance(row)
+  };
+}
+
 function readExpectedBatters(filePath: string) {
   if (!fs.existsSync(filePath)) return [];
-  return parseCsvObjects(filePath).map((row) => ({
-    ["last_name, first_name"]: row["last_name, first_name"] || "",
-    player_id: toNumber(row["player_id"]),
-    year: toNumber(row["year"]),
-    pa: toNumber(row["pa"]),
-    bip: toNumber(row["bip"]),
-    ba: toNumber(row["ba"]),
-    est_ba: toNumber(row["est_ba"]),
-    est_ba_minus_ba_diff: toNumber(row["est_ba_minus_ba_diff"]),
-    slg: toNumber(row["slg"]),
-    est_slg: toNumber(row["est_slg"]),
-    est_slg_minus_slg_diff: toNumber(row["est_slg_minus_slg_diff"]),
-    woba: toNumber(row["woba"]),
-    est_woba: toNumber(row["est_woba"]),
-    est_woba_minus_woba_diff: toNumber(row["est_woba_minus_woba_diff"])
-  })) satisfies ExpectedBatterRow[];
+  return parseCsvObjects(filePath).map(materializeBatter)
+    .filter((row) => row.player_id > 0 && row["last_name, first_name"]);
 }
 
 function readExpectedPitchers(filePath: string) {
   if (!fs.existsSync(filePath)) return [];
-  return parseCsvObjects(filePath).map((row) => ({
-    ["last_name, first_name"]: row["last_name, first_name"] || "",
-    player_id: toNumber(row["player_id"]),
-    year: toNumber(row["year"]),
-    pa: toNumber(row["pa"]),
-    bip: toNumber(row["bip"]),
-    ba: toNumber(row["ba"]),
-    est_ba: toNumber(row["est_ba"]),
-    est_ba_minus_ba_diff: toNumber(row["est_ba_minus_ba_diff"]),
-    slg: toNumber(row["slg"]),
-    est_slg: toNumber(row["est_slg"]),
-    est_slg_minus_slg_diff: toNumber(row["est_slg_minus_slg_diff"]),
-    woba: toNumber(row["woba"]),
-    est_woba: toNumber(row["est_woba"]),
-    est_woba_minus_woba_diff: toNumber(row["est_woba_minus_woba_diff"]),
-    era: toNumber(row["era"]),
-    xera: toNumber(row["xera"]),
-    era_minus_xera_diff: toNumber(row["era_minus_xera_diff"])
-  })) satisfies ExpectedPitcherRow[];
+  return parseCsvObjects(filePath).map(materializePitcher)
+    .filter((row) => row.player_id > 0 && row["last_name, first_name"]);
 }
 
 function playerKey(value: { ["last_name, first_name"]: string; player_id: number }) {
-  return value.player_id > 0
-    ? `id:${value.player_id}`
-    : `name:${normalizeName(value["last_name, first_name"])}`;
-}
-
-function synthesizeBatter(row: ExpectedBatterRow): BatterStat {
-  const xiso = Math.max(0, row.est_slg - row.est_ba);
-  const powerGap = Math.max(0, row.est_slg - 0.36);
-  const hardHitPercent = clamp(28 + powerGap * 110, 20, 64);
-  const barrelRate = clamp(xiso * 42, 0, 24);
-  const kPercent = clamp(20 + (0.245 - row.est_ba) * 140 + Math.max(0.44 - row.est_slg, 0) * 18, 8, 34);
-  const bbPercent = clamp(7.5 + (row.est_woba - 0.32) * 45, 4, 16);
-  const exitVelocity = clamp(86 + powerGap * 34, 84, 98);
-  const avgSwingSpeed = clamp(67 + xiso * 28, 63, 78);
-
-  return {
-    ["last_name, first_name"]: row["last_name, first_name"],
-    player_id: row.player_id,
-    year: row.year,
-    pa: row.pa,
-    hit: Math.max(0, Math.round(row.ba * row.pa)),
-    home_run: Math.max(0, Math.round(xiso * row.pa * 0.32)),
-    k_percent: Number(kPercent.toFixed(1)),
-    bb_percent: Number(bbPercent.toFixed(1)),
-    batting_avg: row.ba,
-    xba: row.est_ba,
-    xslg: row.est_slg,
-    woba: row.woba,
-    xwoba: row.est_woba,
-    xobp: clamp(0.24 + row.est_ba * 0.38 + bbPercent * 0.0035, 0.26, 0.47),
-    xiso: Number(xiso.toFixed(3)),
-    avg_swing_speed: Number(avgSwingSpeed.toFixed(1)),
-    fast_swing_rate: Number(clamp(powerGap * 130, 0, 60).toFixed(1)),
-    blasts_contact: Number(clamp(powerGap * 55, 0, 28).toFixed(1)),
-    blasts_swing: Number(clamp(powerGap * 38, 0, 22).toFixed(1)),
-    squared_up_contact: Number(clamp(20 + (row.est_woba - 0.3) * 110, 16, 56).toFixed(1)),
-    squared_up_swing: Number(clamp(14 + (row.est_woba - 0.3) * 80, 12, 38).toFixed(1)),
-    avg_swing_length: 7.2,
-    swords: 0,
-    attack_angle: Number(clamp(9 + xiso * 22, 6, 18).toFixed(1)),
-    attack_direction: 0,
-    ideal_angle_rate: Number(clamp(48 + powerGap * 60, 40, 76).toFixed(1)),
-    vertical_swing_path: 31,
-    exit_velocity_avg: Number(exitVelocity.toFixed(1)),
-    launch_angle_avg: Number(clamp(8 + xiso * 36, 5, 22).toFixed(1)),
-    sweet_spot_percent: Number(clamp(28 + (row.est_woba - 0.3) * 85, 22, 50).toFixed(1)),
-    barrel_batted_rate: Number(barrelRate.toFixed(1)),
-    solidcontact_percent: Number(clamp(barrelRate * 0.42, 0, 10).toFixed(1)),
-    hard_hit_percent: Number(hardHitPercent.toFixed(1)),
-    avg_best_speed: Number((exitVelocity + 8.5).toFixed(2)),
-    avg_hyper_speed: Number((exitVelocity + 4.8).toFixed(2)),
-    whiff_percent: Number(clamp(14 + kPercent * 0.62, 12, 38).toFixed(1)),
-    swing_percent: Number(clamp(42 + xiso * 28, 38, 56).toFixed(1))
-  };
-}
-
-function synthesizePitcher(row: ExpectedPitcherRow): PitcherStat {
-  const xiso = Math.max(0, row.est_slg - row.est_ba);
-  const kPercent = clamp(20 + (0.235 - row.est_ba) * 130 + (3.9 - row.xera) * 2.2, 14, 35);
-  const bbPercent = clamp(7.6 + (row.xera - row.era) * 1.1, 4, 12);
-  const hardHitAllowed = clamp(28 + Math.max(0, row.est_slg - 0.31) * 95, 22, 56);
-  const barrelAllowed = clamp(xiso * 28, 0, 17);
-  const whiffPercent = clamp(20 + (kPercent - 18) * 0.8, 18, 36);
-
-  return {
-    ["last_name, first_name"]: row["last_name, first_name"],
-    player_id: row.player_id,
-    year: row.year,
-    pa: row.pa,
-    k_percent: Number(kPercent.toFixed(1)),
-    bb_percent: Number(bbPercent.toFixed(1)),
-    xba: row.est_ba,
-    xslg: row.est_slg,
-    woba: row.woba,
-    xwoba: row.est_woba,
-    xobp: clamp(0.23 + row.est_ba * 0.36 + bbPercent * 0.004, 0.24, 0.38),
-    xiso: Number(xiso.toFixed(3)),
-    avg_swing_speed: 71.5,
-    fast_swing_rate: Number(clamp((row.est_slg - 0.3) * 100, 14, 34).toFixed(1)),
-    blasts_contact: Number(clamp((row.est_slg - 0.3) * 48, 4, 24).toFixed(1)),
-    blasts_swing: Number(clamp((row.est_slg - 0.3) * 36, 3, 18).toFixed(1)),
-    squared_up_contact: Number(clamp(28 + (row.est_woba - 0.29) * 75, 22, 42).toFixed(1)),
-    squared_up_swing: Number(clamp(20 + (row.est_woba - 0.29) * 55, 16, 32).toFixed(1)),
-    avg_swing_length: 7.3,
-    swords: Number(clamp((kPercent - 17) / 2.6, 0, 8).toFixed(0)),
-    attack_angle: Number(clamp(10 + xiso * 18, 7, 16).toFixed(1)),
-    attack_direction: 0,
-    ideal_angle_rate: Number(clamp(46 + (row.est_slg - 0.3) * 52, 40, 64).toFixed(1)),
-    vertical_swing_path: 31.5,
-    exit_velocity_avg: Number(clamp(85 + Math.max(0, row.est_slg - 0.3) * 30, 84, 94).toFixed(1)),
-    launch_angle_avg: Number(clamp(10 + xiso * 22, 8, 18).toFixed(1)),
-    sweet_spot_percent: Number(clamp(26 + (row.est_slg - 0.3) * 45, 22, 38).toFixed(1)),
-    barrel_batted_rate: Number(barrelAllowed.toFixed(1)),
-    hard_hit_percent: Number(hardHitAllowed.toFixed(1)),
-    avg_best_speed: Number((88 + Math.max(0, row.est_slg - 0.3) * 28).toFixed(2)),
-    avg_hyper_speed: Number((92 + Math.max(0, row.est_slg - 0.3) * 18).toFixed(2)),
-    z_swing_percent: Number(clamp(60 + (kPercent - 20) * 0.4, 58, 72).toFixed(1)),
-    out_zone_swing_miss: Number(clamp(8 + (kPercent - 18) * 0.7, 6, 22).toFixed(0)),
-    whiff_percent: Number(whiffPercent.toFixed(1)),
-    swing_percent: 45
-  };
+  return value.player_id > 0 ? `id:${value.player_id}` : `name:${normalizeName(value["last_name, first_name"])}`;
 }
 
 function resolveCsvPath(envKey: string, workspacePath: string) {
-  const envValue = process.env[envKey];
-  if (cleanText(envValue)) return cleanText(envValue);
-  return workspacePath;
+  return cleanText(process.env[envKey]) || workspacePath;
 }
 
 function fileStamp(filePath: string) {
-  try {
-    return fs.statSync(filePath).mtimeMs;
-  } catch {
-    return -1;
-  }
+  try { return fs.statSync(filePath).mtimeMs; } catch { return -1; }
 }
 
 export function getExpectedStatsCsvPaths() {
@@ -350,107 +255,36 @@ export function getAugmentedStats(base: BaseStats): AugmentedStats {
   const { batterPath, pitcherPath } = getExpectedStatsCsvPaths();
   const batterStamp = fileStamp(batterPath);
   const pitcherStamp = fileStamp(pitcherPath);
-
-  if (
-    cache
-    && cache.batterPath === batterPath
-    && cache.pitcherPath === pitcherPath
-    && cache.batterStamp === batterStamp
-    && cache.pitcherStamp === pitcherStamp
-  ) {
-    return cache.value;
-  }
+  if (cache && cache.batterPath === batterPath && cache.pitcherPath === pitcherPath
+    && cache.batterStamp === batterStamp && cache.pitcherStamp === pitcherStamp) return cache.value;
 
   const expectedBatters = readExpectedBatters(batterPath);
   const expectedPitchers = readExpectedPitchers(pitcherPath);
-
-  const batterByKey = new Map(base.batters.map((player) => [playerKey(player), player]));
-  const pitcherByKey = new Map(base.pitchers.map((player) => [playerKey(player), player]));
+  const baseBatterKeys = new Set(base.batters.map(playerKey));
+  const basePitcherKeys = new Set(base.pitchers.map(playerKey));
+  // Once a persisted season feed exists, it is the complete player universe.
+  // Static seed rows are only an emergency fallback when no feed can be read.
+  const batterByKey = new Map<string, BatterStat>(expectedBatters.length
+    ? []
+    : base.batters.map((player): [string, BatterStat] => [playerKey(player), player]));
+  const pitcherByKey = new Map<string, PitcherStat>(expectedPitchers.length
+    ? []
+    : base.pitchers.map((player): [string, PitcherStat] => [playerKey(player), player]));
   let overriddenBatters = 0;
   let overriddenPitchers = 0;
-
   expectedBatters.forEach((row) => {
     const key = playerKey(row);
-    const existing = batterByKey.get(key);
-    const fresh = synthesizeBatter(row);
-    if (existing) {
-      overriddenBatters += 1;
-      // Expected-stat values and PA must stay fresh; retain measured fields that
-      // are absent from this narrower leaderboard until the live overlay loads.
-      batterByKey.set(key, {
-        ...fresh,
-        k_percent: existing.k_percent,
-        bb_percent: existing.bb_percent,
-        avg_swing_speed: existing.avg_swing_speed,
-        fast_swing_rate: existing.fast_swing_rate,
-        blasts_contact: existing.blasts_contact,
-        blasts_swing: existing.blasts_swing,
-        squared_up_contact: existing.squared_up_contact,
-        squared_up_swing: existing.squared_up_swing,
-        avg_swing_length: existing.avg_swing_length,
-        swords: existing.swords,
-        attack_angle: existing.attack_angle,
-        attack_direction: existing.attack_direction,
-        ideal_angle_rate: existing.ideal_angle_rate,
-        vertical_swing_path: existing.vertical_swing_path,
-        exit_velocity_avg: existing.exit_velocity_avg,
-        launch_angle_avg: existing.launch_angle_avg,
-        sweet_spot_percent: existing.sweet_spot_percent,
-        barrel_batted_rate: existing.barrel_batted_rate,
-        solidcontact_percent: existing.solidcontact_percent,
-        hard_hit_percent: existing.hard_hit_percent,
-        avg_best_speed: existing.avg_best_speed,
-        avg_hyper_speed: existing.avg_hyper_speed,
-        whiff_percent: existing.whiff_percent,
-        swing_percent: existing.swing_percent
-      });
-      return;
-    }
-    batterByKey.set(key, fresh);
+    if (baseBatterKeys.has(key)) overriddenBatters += 1;
+    batterByKey.set(key, row);
   });
-
   expectedPitchers.forEach((row) => {
     const key = playerKey(row);
-    const existing = pitcherByKey.get(key);
-    const fresh = synthesizePitcher(row);
-    if (existing) {
-      overriddenPitchers += 1;
-      pitcherByKey.set(key, {
-        ...fresh,
-        k_percent: existing.k_percent,
-        bb_percent: existing.bb_percent,
-        avg_swing_speed: existing.avg_swing_speed,
-        fast_swing_rate: existing.fast_swing_rate,
-        blasts_contact: existing.blasts_contact,
-        blasts_swing: existing.blasts_swing,
-        squared_up_contact: existing.squared_up_contact,
-        squared_up_swing: existing.squared_up_swing,
-        avg_swing_length: existing.avg_swing_length,
-        swords: existing.swords,
-        attack_angle: existing.attack_angle,
-        attack_direction: existing.attack_direction,
-        ideal_angle_rate: existing.ideal_angle_rate,
-        vertical_swing_path: existing.vertical_swing_path,
-        exit_velocity_avg: existing.exit_velocity_avg,
-        launch_angle_avg: existing.launch_angle_avg,
-        sweet_spot_percent: existing.sweet_spot_percent,
-        barrel_batted_rate: existing.barrel_batted_rate,
-        hard_hit_percent: existing.hard_hit_percent,
-        avg_best_speed: existing.avg_best_speed,
-        avg_hyper_speed: existing.avg_hyper_speed,
-        z_swing_percent: existing.z_swing_percent,
-        out_zone_swing_miss: existing.out_zone_swing_miss,
-        whiff_percent: existing.whiff_percent,
-        swing_percent: existing.swing_percent
-      });
-      return;
-    }
-    pitcherByKey.set(key, fresh);
+    if (basePitcherKeys.has(key)) overriddenPitchers += 1;
+    pitcherByKey.set(key, row);
   });
 
   const mergedBatters = [...batterByKey.values()];
   const mergedPitchers = [...pitcherByKey.values()];
-
   const value: AugmentedStats = {
     batters: mergedBatters,
     pitchers: mergedPitchers,
@@ -459,6 +293,8 @@ export function getAugmentedStats(base: BaseStats): AugmentedStats {
       basePitchers: base.pitchers.length,
       expectedBatters: expectedBatters.length,
       expectedPitchers: expectedPitchers.length,
+      measuredBatters: expectedBatters.filter((row) => row.statcast_measured).length,
+      measuredPitchers: expectedPitchers.filter((row) => row.statcast_measured).length,
       mergedBatters: mergedBatters.length,
       mergedPitchers: mergedPitchers.length,
       overriddenBatters,
@@ -473,14 +309,6 @@ export function getAugmentedStats(base: BaseStats): AugmentedStats {
       pitcherCsvUpdatedAt: pitcherStamp > 0 ? new Date(pitcherStamp).toISOString() : null
     }
   };
-
-  cache = {
-    batterPath,
-    pitcherPath,
-    batterStamp,
-    pitcherStamp,
-    value
-  };
-
+  cache = { batterPath, pitcherPath, batterStamp, pitcherStamp, value };
   return value;
 }

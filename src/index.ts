@@ -24,7 +24,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(process.cwd(), "public")));
 
 const PORT = process.env.PORT || 3000;
-const ANALYSIS_VERSION = "models-v8.8.1-estimated-market-weight";
+const ANALYSIS_VERSION = "models-v8.9-live-player-stats";
 const CURRENT_SEASON = new Date().getFullYear();
 const PREVIOUS_SEASON = CURRENT_SEASON - 1;
 
@@ -32,8 +32,9 @@ const SCHEDULE_URL = "https://www.mlb.com/schedule";
 const ROTOWIRE_LINEUPS_URL = "https://www.rotowire.com/baseball/daily-lineups.php";
 const SAVANT_TOP_URL = "https://baseballsavant.mlb.com/leaderboard/top";
 const SAVANT_EXPECTED_URL = "https://baseballsavant.mlb.com/leaderboard/expected_statistics";
-const SAVANT_EXPECTED_BATTER_URL = `https://baseballsavant.mlb.com/leaderboard/expected_statistics?type=batter&year=${CURRENT_SEASON}&position=&team=&filterType=bip&min=1&sort=9&sortDir=desc`;
-const SAVANT_EXPECTED_PITCHER_URL = `https://baseballsavant.mlb.com/leaderboard/expected_statistics?type=pitcher&year=${CURRENT_SEASON}&position=&team=&filterType=bip&min=1&sort=9&sortDir=desc`;
+const SAVANT_CUSTOM_SELECTIONS = "pa%2Ck_percent%2Cbb_percent%2Cbatting_avg%2Cwoba%2Cxwoba%2Cxba%2Cxslg%2Cxobp%2Cxiso%2Cavg_swing_speed%2Cexit_velocity_avg%2Claunch_angle_avg%2Csweet_spot_percent%2Cbarrel_batted_rate%2Chard_hit_percent%2Cavg_best_speed%2Cavg_hyper_speed%2Cwhiff_percent%2Cswing_percent";
+const SAVANT_EXPECTED_BATTER_URL = `https://baseballsavant.mlb.com/leaderboard/custom?year=${CURRENT_SEASON}&type=batter&filter=&sort=pa&sortDir=desc&min=1&selections=${SAVANT_CUSTOM_SELECTIONS}`;
+const SAVANT_EXPECTED_PITCHER_URL = `https://baseballsavant.mlb.com/leaderboard/custom?year=${CURRENT_SEASON}&type=pitcher&filter=&sort=pa&sortDir=desc&min=1&selections=${SAVANT_CUSTOM_SELECTIONS}`;
 const SAVANT_PARK_FACTORS_URL = `https://baseballsavant.mlb.com/leaderboard/statcast-park-factors?type=year&year=${CURRENT_SEASON}&batSide=&stat=index_wOBA&condition=All&rolling=3&parks=mlb`;
 const TEAMRANKINGS_RUN_DIFF_URL = "https://www.teamrankings.com/mlb/stat/run-differential";
 const BR_WIN_PROB_BATTING_URL = `https://www.baseball-reference.com/leagues/majors/${CURRENT_SEASON}-win_probability-batting.shtml`;
@@ -697,90 +698,67 @@ function csvEscape(value: string | number | null | undefined) {
   return text;
 }
 
-function formatDecimal(value: number, digits = 3) {
-  if (!Number.isFinite(value)) return "";
-  return value.toFixed(digits);
-}
-
 function formatExpectedStatsCsv(
   type: "batter" | "pitcher",
   rows: Array<Record<string, string | number | null>>
 ) {
+  const sharedHeaders = [
+    "last_name, first_name", "player_id", "year", "pa", "k_percent", "bb_percent",
+    "xba", "xslg", "woba", "xwoba", "xobp", "xiso", "avg_swing_speed",
+    "fast_swing_rate", "blasts_contact", "blasts_swing", "squared_up_contact",
+    "squared_up_swing", "avg_swing_length", "swords", "attack_angle",
+    "attack_direction", "ideal_angle_rate", "vertical_swing_path", "exit_velocity_avg",
+    "launch_angle_avg", "sweet_spot_percent", "barrel_batted_rate", "hard_hit_percent",
+    "avg_best_speed", "avg_hyper_speed", "whiff_percent", "swing_percent",
+    "data_source", "data_updated_at", "statcast_measured"
+  ];
   const headers = type === "batter"
-    ? [
-        "last_name, first_name",
-        "player_id",
-        "year",
-        "pa",
-        "bip",
-        "ba",
-        "est_ba",
-        "est_ba_minus_ba_diff",
-        "slg",
-        "est_slg",
-        "est_slg_minus_slg_diff",
-        "woba",
-        "est_woba",
-        "est_woba_minus_woba_diff"
-      ]
-    : [
-        "last_name, first_name",
-        "player_id",
-        "year",
-        "pa",
-        "bip",
-        "ba",
-        "est_ba",
-        "est_ba_minus_ba_diff",
-        "slg",
-        "est_slg",
-        "est_slg_minus_slg_diff",
-        "woba",
-        "est_woba",
-        "est_woba_minus_woba_diff",
-        "era",
-        "xera",
-        "era_minus_xera_diff"
-      ];
-
-  const lines = rows.map((row) => {
-    const ba = Number(row.ba ?? 0);
-    const estBa = Number(row.est_ba ?? 0);
-    const slg = Number(row.slg ?? 0);
-    const estSlg = Number(row.est_slg ?? 0);
-    const woba = Number(row.woba ?? 0);
-    const estWoba = Number(row.est_woba ?? 0);
-    const baseValues: Array<string | number> = [
-      String(row.entity_name ?? ""),
-      String(row.entity_id ?? ""),
-      String(row.year ?? ""),
-      String(row.pa ?? ""),
-      String(row.bip ?? ""),
-      formatDecimal(ba),
-      formatDecimal(estBa),
-      formatDecimal(estBa - ba),
-      formatDecimal(slg),
-      formatDecimal(estSlg),
-      formatDecimal(estSlg - slg),
-      formatDecimal(woba),
-      formatDecimal(estWoba),
-      formatDecimal(estWoba - woba)
-    ];
-
-    if (type === "pitcher") {
-      const era = Number(row.era ?? 0);
-      const xera = Number(row.xera ?? 0);
-      baseValues.push(
-        formatDecimal(era),
-        formatDecimal(xera),
-        formatDecimal(era - xera)
-      );
-    }
-
-    return baseValues.map(csvEscape).join(",");
-  });
+    ? [...sharedHeaders.slice(0, 4), "hit", "home_run", "batting_avg", ...sharedHeaders.slice(4), "solidcontact_percent"]
+    : [...sharedHeaders, "z_swing_percent", "out_zone_swing_miss", "out_zone_swing_miss_percent", "swords_per_100_pa"];
+  const updatedAt = new Date().toISOString();
+  const lines = rows
+    .filter((row) => String(row.player_name ?? row.entity_name ?? "").trim() && Number(row.player_id ?? row.entity_id ?? 0) > 0)
+    .map((row) => headers.map((header) => {
+      if (header === "last_name, first_name") return csvEscape(row.player_name ?? row.entity_name ?? "");
+      if (header === "player_id") return csvEscape(row.player_id ?? row.entity_id ?? "");
+      if (header === "data_source") return csvEscape("baseball_savant_custom");
+      if (header === "data_updated_at") return csvEscape(updatedAt);
+      if (header === "statcast_measured") return csvEscape("true");
+      if (header === "out_zone_swing_miss_percent") return csvEscape(row.oz_swing_miss_percent ?? "");
+      if (header === "swords_per_100_pa") {
+        const pa = Number(row.pa ?? 0);
+        return csvEscape(pa ? Number(row.swords ?? 0) / pa * 100 : 0);
+      }
+      return csvEscape(row[header] ?? "");
+    }).join(","));
 
   return `${headers.map(csvEscape).join(",")}\n${lines.join("\n")}\n`;
+}
+
+function validateMeasuredSavantRows(
+  type: "batter" | "pitcher",
+  rows: Array<Record<string, string | number | null>>
+) {
+  const minimumRows = type === "batter" ? 400 : 500;
+  const requiredCoverage = Math.floor(rows.length * 0.8);
+  const hasValue = (row: Record<string, string | number | null>, key: string) => {
+    const value = row[key];
+    return value !== null && value !== undefined && String(value).trim() !== "" && Number.isFinite(Number(value));
+  };
+  const identified = rows.filter((row) =>
+    String(row.player_name ?? row.entity_name ?? "").trim()
+    && Number(row.player_id ?? row.entity_id ?? 0) > 0
+  ).length;
+  const coreMeasured = rows.filter((row) =>
+    hasValue(row, "pa") && hasValue(row, "k_percent") && hasValue(row, "xwoba")
+    && hasValue(row, "hard_hit_percent") && hasValue(row, "barrel_batted_rate")
+  ).length;
+
+  if (rows.length < minimumRows || identified < requiredCoverage || coreMeasured < requiredCoverage) {
+    throw new Error(
+      `Savant ${type} feed failed quality checks: ${rows.length} rows, ${identified} identified, ${coreMeasured} with core measured fields`
+    );
+  }
 }
 
 async function refreshExpectedStatsCsvs() {
@@ -793,9 +771,8 @@ async function refreshExpectedStatsCsvs() {
     ]);
     const batterRows = extractSavantLeaderboardData(batterHtml);
     const pitcherRows = extractSavantLeaderboardData(pitcherHtml);
-    if (batterRows.length < 100 || pitcherRows.length < 100) {
-      throw new Error(`Savant expected-stat response was incomplete (${batterRows.length} batters, ${pitcherRows.length} pitchers)`);
-    }
+    validateMeasuredSavantRows("batter", batterRows);
+    validateMeasuredSavantRows("pitcher", pitcherRows);
 
     const { batterPath, pitcherPath } = getExpectedStatsCsvWritePaths();
     const batterTempPath = `${batterPath}.tmp`;
@@ -2157,11 +2134,15 @@ function rankPitcherForKs(
         return batter.k_percent * (1 - weight) + (recent?.kPercent || batter.k_percent) * weight;
       }))
     : 22;
+  const chaseMissRate = pitcher.out_zone_swing_miss_percent
+    ?? (pitcher.pa ? pitcher.out_zone_swing_miss / pitcher.pa * 100 : 0);
+  const swordsRate = pitcher.swords_per_100_pa
+    ?? (pitcher.pa ? pitcher.swords / pitcher.pa * 100 : 0);
   return 50
     + (kPercent - 22) * 1.2
     + (pitcher.whiff_percent - 24) * 0.65
-    + (pitcher.out_zone_swing_miss - 10) * 0.35
-    + pitcher.swords * 0.8
+    + (chaseMissRate - 35) * 0.25
+    + (swordsRate - 4) * 0.45
     + (lineupK - 22) * 0.6
     - (bbPercent - 8) * 0.7;
 }
@@ -3258,10 +3239,14 @@ async function analyzePitcherStrikeouts(pitcher: PitcherStat, lineup: BatterStat
   })) : null;
   const score = rankPitcherForKs(pitcher, lineup, recentPitcher, recentBatters);
   const pick = score >= 60 ? "Over" : "Under";
+  const chaseMissRate = pitcher.out_zone_swing_miss_percent
+    ?? (pitcher.pa ? pitcher.out_zone_swing_miss / pitcher.pa * 100 : 0);
+  const swordsRate = pitcher.swords_per_100_pa
+    ?? (pitcher.pa ? pitcher.swords / pitcher.pa * 100 : 0);
 
   return [
     `**${statDisplayName(pitcher["last_name, first_name"])} strikeout outlook**`,
-    `${sampleTag(pitcher.pa)} season K% **${formatNumber(pitcher.k_percent)}**, 30-day K% **${formatNumber(recentPitcher?.kPercent ?? pitcher.k_percent)}**, whiff **${formatNumber(pitcher.whiff_percent)}%**, chase-miss **${formatNumber(pitcher.out_zone_swing_miss, 0)}**, swords **${formatNumber(pitcher.swords, 0)}**.`,
+    `${sampleTag(pitcher.pa)} season K% **${formatNumber(pitcher.k_percent)}**, 30-day K% **${formatNumber(recentPitcher?.kPercent ?? pitcher.k_percent)}**, whiff **${formatNumber(pitcher.whiff_percent)}%**, chase-miss rate **${formatNumber(chaseMissRate)}%**, swords **${formatNumber(pitcher.swords, 0)}** (${formatNumber(swordsRate)} per 100 BF).`,
     `The swing-and-miss profile is ${pitcher.k_percent >= 28 || pitcher.whiff_percent >= 30 ? "strong" : "more contact-prone"}, while BB% at **${formatNumber(pitcher.bb_percent)}** ${pitcher.bb_percent > 10 ? "adds pitch-count risk." : "keeps the outing on track."} Savant-style support here is the whiff/chase side plus the strikeout-quality inputs like swords.`,
     lineupK !== null
       ? `Matched lineup K% is **${formatNumber(lineupK)}%**, so the opponent ${lineupK >= 24 ? "does give him extra upside." : "is not an especially soft strikeout target."}`
