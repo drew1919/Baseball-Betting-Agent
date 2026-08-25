@@ -7,6 +7,16 @@ function safeJson(value: unknown) {
 export function renderPage(data: { batters: BatterStat[]; pitchers: PitcherStat[] }) {
   const batterCount = data.batters.length;
   const pitcherCount = data.pitchers.length;
+  const measuredBatterCount = data.batters.filter((player) => player.statcast_measured).length;
+  const measuredPitcherCount = data.pitchers.filter((player) => player.statcast_measured).length;
+  const latestPlayerUpdate = [...data.batters, ...data.pitchers]
+    .map((player) => player.data_updated_at || "")
+    .filter(Boolean)
+    .sort()
+    .at(-1);
+  const playerUpdateLabel = latestPlayerUpdate
+    ? new Date(latestPlayerUpdate).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })
+    : "refresh pending";
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -96,6 +106,8 @@ header h1{font-size:1.12rem;color:#2a9d8f}
 .gc-meta{margin-top:6px;padding-top:5px;border-top:1px dashed #1e3a5f;display:flex;gap:6px;flex-wrap:wrap;font-size:0.63rem;color:#64748b}
 .gc-meta span{color:#94a3b8;font-weight:600}
 .stabs{display:flex;border-bottom:1px solid #1e3a5f;flex-shrink:0}
+.player-source{padding:7px 9px;background:#101826;border-bottom:1px solid #1e3a5f;color:#64748b;font-size:.62rem;line-height:1.45}
+.player-source strong{color:#2a9d8f}
 .stab{flex:1;padding:7px 4px;border:0;background:transparent;text-align:center;font-family:inherit;font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#64748b;cursor:pointer}
 .stab.on{color:#2a9d8f;border-bottom:2px solid #2a9d8f;background:#0d1b35}
 .slist{flex:1;overflow-y:auto;padding:9px}
@@ -251,6 +263,7 @@ header h1{font-size:1.12rem;color:#2a9d8f}
     </details>
     </section>
     <section class="players-panel mobile-view" id="playersPanel" role="tabpanel" aria-labelledby="mobile-players">
+    <div class="player-source"><strong>Measured Savant season stats</strong><br>${measuredBatterCount}/${batterCount} batters and ${measuredPitcherCount}/${pitcherCount} pitchers · updated ${playerUpdateLabel} ET</div>
     <div class="stabs">
       <button type="button" class="stab on" id="st-bat" onclick="switchTab('bat')">Batters</button>
       <button type="button" class="stab" id="st-pit" onclick="switchTab('pit')">Pitchers</button>

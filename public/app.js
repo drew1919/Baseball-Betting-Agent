@@ -126,9 +126,12 @@ async function loadHealth() {
       ? " / daily expected CSV sync active"
       : " / static-only fallback";
     var oddsStatus = data.oddsSourceConfigured ? " / odds: " + (data.oddsBookmaker || "configured") : " / odds layer ready (awaiting key)";
+    var measuredStatus = data.statCoverage
+      ? " / measured Savant " + data.statCoverage.measuredBatters + "B + " + data.statCoverage.measuredPitchers + "P"
+      : "";
     setPill(
       "dataStatus",
-      "Local Savant data " + data.statCounts.batters + " batters / " + data.statCounts.pitchers + " pitchers / MLB schedule + RotoWire + Savant leaderboards + 1st inning searches" + csvStatus + oddsStatus,
+      "Local Savant data " + data.statCounts.batters + " batters / " + data.statCounts.pitchers + " pitchers" + measuredStatus + " / MLB schedule + RotoWire + Savant leaderboards + 1st inning searches" + csvStatus + oddsStatus,
       "status-muted"
     );
   } catch (e) {
@@ -313,7 +316,8 @@ function renderSidebar() {
       html += '<div class="pc" onclick="askPlayer(' + JSON.stringify(b["last_name, first_name"]) + ')"><div class="pn">'
         + esc(b["last_name, first_name"])
         + '</div><div class="ps"><span class="b ' + kc + '">K% ' + b.k_percent + '</span><span class="b '
-        + wc + '">xwOBA ' + b.xwoba + '</span><span class="b y">Hard ' + b.hard_hit_percent + "%</span></div></div>";
+        + wc + '">xwOBA ' + b.xwoba + '</span><span class="b y">Hard ' + b.hard_hit_percent
+        + '%</span><span class="b y">PA ' + b.pa + "</span></div></div>";
     });
   } else {
     PITCHERS.forEach(function (p) {
@@ -321,7 +325,7 @@ function renderSidebar() {
       html += '<div class="pc" onclick="askPlayer(' + JSON.stringify(p["last_name, first_name"]) + ')"><div class="pn">'
         + esc(p["last_name, first_name"])
         + '</div><div class="ps"><span class="b ' + kc + '">K% ' + p.k_percent + '</span><span class="b y">Whiff '
-        + p.whiff_percent + '%</span><span class="b y">PA ' + p.pa + "</span></div></div>";
+        + p.whiff_percent + '%</span><span class="b y">Hard ' + p.hard_hit_percent + '%</span><span class="b y">BF ' + p.pa + "</span></div></div>";
     });
   }
   el.innerHTML = html;
