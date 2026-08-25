@@ -7,6 +7,7 @@ var GAMES = [];
 var gameCtx = "";
 var manualCtx = "";
 var selectedGameIndex = -1;
+var mobileView = "games";
 var betLabels = {
   general: "General",
   nrfi: "NRFI / YRFI",
@@ -135,6 +136,51 @@ async function loadHealth() {
   }
 }
 
+function isMobileLayout() {
+  return window.matchMedia("(max-width: 900px)").matches;
+}
+
+function setMobileView(view) {
+  var panels = {
+    games: document.getElementById("gamesPanel"),
+    chat: document.getElementById("chatPanel"),
+    players: document.getElementById("playersPanel")
+  };
+  if (!panels[view]) return;
+  mobileView = view;
+  Object.keys(panels).forEach(function (name) {
+    var active = name === view;
+    var panel = panels[name];
+    var tab = document.getElementById("mobile-" + name);
+    panel.classList.toggle("mobile-active", active);
+    if (isMobileLayout()) panel.setAttribute("aria-hidden", active ? "false" : "true");
+    else panel.removeAttribute("aria-hidden");
+    if (tab) {
+      tab.classList.toggle("on", active);
+      tab.setAttribute("aria-selected", active ? "true" : "false");
+      tab.tabIndex = active ? 0 : -1;
+    }
+  });
+  if (view === "chat") {
+    var messages = document.getElementById("msgs");
+    if (messages) messages.scrollTop = messages.scrollHeight;
+  }
+}
+
+function initializeResponsiveUI() {
+  var sourceBox = document.getElementById("sourceBox");
+  var contextBox = document.getElementById("ctxBox");
+  if (isMobileLayout()) {
+    if (sourceBox) sourceBox.removeAttribute("open");
+    if (contextBox) contextBox.removeAttribute("open");
+  }
+  setMobileView(mobileView);
+  var media = window.matchMedia("(max-width: 900px)");
+  var handleLayoutChange = function () { setMobileView(mobileView); };
+  if (media.addEventListener) media.addEventListener("change", handleLayoutChange);
+  else if (media.addListener) media.addListener(handleLayoutChange);
+}
+
 function normalizeText(s) {
   return String(s || "")
     .normalize("NFD")
@@ -174,7 +220,9 @@ function resolveContextForMessage(message) {
 
 async function loadSources() {
   var list = document.getElementById("sourceList");
+  var summary = document.getElementById("sourceSummary");
   if (!list) return;
+  if (summary) summary.textContent = "Updating...";
   list.innerHTML = '<div class="lup-ph" style="padding:8px 4px">Scraping public baseball sources...</div>';
   try {
     var res = await fetch("/api/sources");
@@ -182,9 +230,12 @@ async function loadSources() {
     if (!res.ok) throw new Error((data && data.error) || ("HTTP " + res.status));
     var sources = data.sources || [];
     if (!sources.length) {
+      if (summary) summary.textContent = "No sources available";
       list.innerHTML = '<div class="lup-ph" style="padding:8px 4px">No source data found.</div>';
       return;
     }
+    var readyCount = sources.filter(function (source) { return source.ok; }).length;
+    if (summary) summary.textContent = readyCount + "/" + sources.length + " ready";
     list.innerHTML = sources.map(function (source) {
       var cls = source.ok ? "chip-g" : "chip-r";
       var label = source.ok ? "Scraped" : "Error";
@@ -202,6 +253,7 @@ async function loadSources() {
         + "</div>";
     }).join("");
   } catch (e) {
+    if (summary) summary.textContent = "Update failed";
     list.innerHTML = '<div class="lup-err">Could not scrape public sources.<br><small style="color:#64748b">' + esc(e.message) + "</small></div>";
   }
 }
@@ -244,6 +296,7 @@ function ask(t) {
 
 function askPlayer(n) {
   var ctx = activeBet === "nrfi" ? "NRFI/YRFI" : activeBet === "strikeouts" ? "strikeout prop" : activeBet === "winner" ? "team winner" : "betting";
+  if (isMobileLayout()) setMobileView("chat");
   ask("Analyze " + n + " for " + ctx);
 }
 
@@ -480,7 +533,9 @@ window.applyManualContext = applyManualContext;
 window.clearManualContext = clearManualContext;
 window.renderSidebar = renderSidebar;
 window.loadSources = loadSources;
+window.setMobileView = setMobileView;
 
+initializeResponsiveUI();
 renderSidebar();
 loadHealth();
 loadSources();
