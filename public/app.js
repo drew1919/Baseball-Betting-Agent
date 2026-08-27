@@ -8,6 +8,8 @@ var gameCtx = "";
 var manualCtx = "";
 var selectedGameIndex = -1;
 var mobileView = "games";
+var marketBoardData = null;
+var marketBoardMode = null;
 var betLabels = {
   general: "General",
   nrfi: "NRFI / YRFI",
@@ -136,6 +138,90 @@ async function loadHealth() {
     );
   } catch (e) {
     setPill("apiStatus", "Backend check failed", "status-warn");
+  }
+}
+
+function hideMarketBoard() {
+  var panel = document.getElementById("marketPanel");
+  if (panel) panel.classList.add("hidden");
+}
+
+function renderMarketBoard(type) {
+  var panel = document.getElementById("marketPanel");
+  var title = document.getElementById("marketTitle");
+  var sub = document.getElementById("marketSub");
+  var rows = document.getElementById("marketRows");
+  if (!panel || !title || !sub || !rows || !marketBoardData) return;
+  marketBoardMode = type;
+  panel.classList.remove("hidden");
+
+  if (type === "nrfi") {
+    var nrfiRows = (marketBoardData.nrfi || []).slice(0, 8);
+    title.textContent = "Today's NRFI / YRFI board";
+    sub.textContent = "Both halves modeled separately · " + (marketBoardData.firstInningPerformance.approved ? "validated tier active" : "pre-calibration watchlist");
+    rows.innerHTML = nrfiRows.length ? nrfiRows.map(function (row, index) {
+      return '<button type="button" class="market-card" onclick="analyzeMarketRow(' + index + ')"><div class="market-card-top"><span>'
+        + esc(row.away + " @ " + row.home) + '</span><span class="market-pick">' + esc(row.pick) + " " + Math.round(row.pickProbability * 100) + '%</span></div><div class="market-detail">Top no-run '
+        + Math.round(row.awayHalfNoRunProbability * 100) + "% · Bottom no-run " + Math.round(row.homeHalfNoRunProbability * 100)
+        + "%" + (row.total !== null ? " · Total " + row.total : "") + '<br><span class="market-edge">Evidence '
+        + Math.round(row.dataQuality * 100) + "%</span> · " + (row.confirmed ? "Confirmed lineups" : "Projected lineups") + "</div></button>";
+    }).join("") : '<div class="market-empty">No first-inning matchups are ready yet.</div>';
+    return;
+  }
+
+  var kRows = (marketBoardData.strikeouts || []).slice(0, 10);
+  title.textContent = "Today's pitcher K board";
+  sub.textContent = "Workload + matchup + Statcast + umpire" + (marketBoardData.externalKRows ? " + external cross-check" : "");
+  rows.innerHTML = kRows.length ? kRows.map(function (row, index) {
+    var market = row.propLine !== null
+      ? row.pick + " " + Number(row.propLine).toFixed(1) + " · " + (row.edge >= 0 ? "+" : "") + Number(row.edge).toFixed(1) + " K edge"
+      : "Fair projection · line needed";
+    return '<button type="button" class="market-card" onclick="analyzeMarketRow(' + index + ')"><div class="market-card-top"><span>'
+      + esc(row.pitcherName + " vs " + row.opponent) + '</span><span class="market-pick">' + Number(row.projectedStrikeouts).toFixed(1)
+      + ' Ks</span></div><div class="market-detail">' + Number(row.projectedInnings).toFixed(1) + " IP · "
+      + (row.opponentKPercent === null ? "Opponent K% pending" : "Opponent K% " + Number(row.opponentKPercent).toFixed(1) + "%")
+      + '<br><span class="market-edge">' + esc(market) + "</span> · Evidence " + Math.round(row.dataQuality * 100) + "%</div></button>";
+  }).join("") : '<div class="market-empty">No probable starters are matched yet.</div>';
+}
+
+async function loadMarketBoard(type, force) {
+  if (type !== "nrfi" && type !== "strikeouts") {
+    hideMarketBoard();
+    return;
+  }
+  var panel = document.getElementById("marketPanel");
+  var title = document.getElementById("marketTitle");
+  var sub = document.getElementById("marketSub");
+  var rows = document.getElementById("marketRows");
+  if (panel) panel.classList.remove("hidden");
+  if (title) title.textContent = type === "nrfi" ? "Today's NRFI / YRFI board" : "Today's pitcher K board";
+  if (sub) sub.textContent = "Building live matchup projections...";
+  if (rows) rows.innerHTML = '<div class="market-empty">Loading today\'s slate...</div>';
+  try {
+    if (!marketBoardData || force) {
+      var res = await fetch("/api/slate-markets");
+      var data = await res.json();
+      if (!res.ok) throw new Error((data && data.error) || ("HTTP " + res.status));
+      marketBoardData = data;
+    }
+    if (activeBet === type) renderMarketBoard(type);
+  } catch (error) {
+    if (sub) sub.textContent = "Projection load failed";
+    if (rows) rows.innerHTML = '<div class="market-empty">' + esc(error.message || error) + "</div>";
+  }
+}
+
+function analyzeMarketRow(index) {
+  if (!marketBoardData || !marketBoardMode) return;
+  var rows = marketBoardMode === "nrfi" ? marketBoardData.nrfi : marketBoardData.strikeouts;
+  var row = rows && rows[index];
+  if (!row) return;
+  if (isMobileLayout()) setMobileView("chat");
+  if (marketBoardMode === "nrfi") {
+    ask("Give me the full NRFI/YRFI analysis for " + row.away + " @ " + row.home);
+  } else {
+    ask("Analyze " + row.pitcherName + " strikeouts against " + row.opponent + " in " + row.away + " @ " + row.home
+      + (row.propLine !== null ? " at a line of " + row.propLine : " and give me the fair line"));
   }
 }
 
@@ -283,6 +369,7 @@ function setBet(btn, type) {
   btn.classList.add("on");
   updateBetState();
   addMsg("a", "Bet mode switched to <strong>" + esc(betLabels[type] || type) + "</strong>.");
+  loadMarketBoard(type, false);
 }
 
 function switchTab(t) {
@@ -538,6 +625,8 @@ window.clearManualContext = clearManualContext;
 window.renderSidebar = renderSidebar;
 window.loadSources = loadSources;
 window.setMobileView = setMobileView;
+window.hideMarketBoard = hideMarketBoard;
+window.analyzeMarketRow = analyzeMarketRow;
 
 initializeResponsiveUI();
 renderSidebar();

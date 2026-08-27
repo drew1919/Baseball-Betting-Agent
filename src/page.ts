@@ -39,6 +39,20 @@ header h1{font-size:1.12rem;color:#2a9d8f}
 .status-ok{background:rgba(42,157,143,.15);color:#2a9d8f}
 .status-warn{background:rgba(245,158,11,.15);color:#f59e0b}
 .status-muted{background:rgba(30,58,95,.35);color:#94a3b8}
+.market-panel{flex-shrink:0;background:linear-gradient(135deg,#101a2d,#0d1728);border-bottom:1px solid #1e3a5f;padding:9px 14px}
+.market-panel.hidden{display:none}
+.market-head{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.market-title{font-size:.74rem;font-weight:800;color:#2a9d8f;text-transform:uppercase;letter-spacing:.06em}
+.market-sub{font-size:.64rem;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.market-close{margin-left:auto;border:1px solid #1e3a5f;background:#1a2540;color:#94a3b8;border-radius:5px;padding:3px 8px;cursor:pointer}
+.market-rows{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(235px,1fr);gap:7px;overflow-x:auto;padding-bottom:2px;scrollbar-width:thin}
+.market-card{border:1px solid #1e3a5f;background:#17233a;border-radius:8px;padding:8px 10px;text-align:left;color:#e2e8f0;font-family:inherit;cursor:pointer;min-height:76px}
+.market-card:hover{border-color:#2a9d8f;background:#1b3049}
+.market-card-top{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:.7rem;font-weight:800}
+.market-pick{color:#2a9d8f}
+.market-detail{margin-top:5px;color:#94a3b8;font-size:.64rem;line-height:1.45}
+.market-edge{color:#f59e0b;font-weight:700}
+.market-empty{font-size:.7rem;color:#64748b;padding:8px}
 .mobile-nav{display:none}
 .body{display:flex;flex:1;overflow:hidden}
 .left{width:272px;min-width:272px;display:flex;flex-direction:column;background:#111827;border-right:1px solid #1e3a5f;overflow:hidden}
@@ -157,6 +171,10 @@ header h1{font-size:1.12rem;color:#2a9d8f}
   .status-bar::-webkit-scrollbar{display:none}
   .status-pill{padding:4px 8px;white-space:nowrap;flex:0 0 auto;max-width:78vw;overflow:hidden;text-overflow:ellipsis}
   #dataStatus,#betStatus,#ctxStatus{display:none}
+  .market-panel{padding:8px 10px;max-height:38vh;overflow:hidden}
+  .market-head{margin-bottom:6px}
+  .market-rows{grid-auto-columns:minmax(265px,85vw)}
+  .market-card{min-height:84px;padding:10px 11px}
   .mobile-nav{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:6px 8px;background:#0d1424;border-bottom:1px solid #1e3a5f;flex-shrink:0}
   .mobile-tab{min-height:42px;border:1px solid transparent;border-radius:7px;background:transparent;color:#64748b;font:700 .7rem inherit;letter-spacing:.04em;text-transform:uppercase;cursor:pointer}
   .mobile-tab.on{background:#1a2540;border-color:#2a9d8f;color:#2a9d8f}
@@ -216,6 +234,14 @@ header h1{font-size:1.12rem;color:#2a9d8f}
   <div class="status-pill status-muted" id="betStatus">Bet mode: General</div>
   <div class="status-pill status-muted" id="ctxStatus">No matchup context selected</div>
 </div>
+<section class="market-panel hidden" id="marketPanel" aria-live="polite">
+  <div class="market-head">
+    <div class="market-title" id="marketTitle">Daily market board</div>
+    <div class="market-sub" id="marketSub">Loading matchup projections...</div>
+    <button class="market-close" type="button" onclick="hideMarketBoard()" aria-label="Close market board">Close</button>
+  </div>
+  <div class="market-rows" id="marketRows"><div class="market-empty">Loading...</div></div>
+</section>
 <nav class="mobile-nav" role="tablist" aria-label="Mobile workspace">
   <button class="mobile-tab on" id="mobile-games" role="tab" aria-selected="true" aria-controls="gamesPanel" onclick="setMobileView('games')">Games</button>
   <button class="mobile-tab" id="mobile-chat" role="tab" aria-selected="false" aria-controls="chatPanel" onclick="setMobileView('chat')">Chat</button>
