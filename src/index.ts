@@ -16,6 +16,7 @@ import { ESTIMATED_MARKET_RELIABILITY, MIN_TRAINING_LINEUP_COVERAGE, shrinkProba
 import type { FirstInningFeatureSnapshot, FirstInningPerformance, FirstInningPick } from "./first-inning-types.js";
 import { evaluateFirstInningPerformance } from "./first-inning-evaluator.js";
 import { parsePlausibleAmericanMoneyline } from "./odds-utils.js";
+import { estimateFirstInningProbability, estimateStrikeoutProjection } from "./prop-models.js";
 
 dotenv.config();
 
@@ -24,7 +25,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(process.cwd(), "public")));
 
 const PORT = process.env.PORT || 3000;
-const ANALYSIS_VERSION = "models-v8.9-live-player-stats";
+const ANALYSIS_VERSION = "models-v9.1-actionable-prop-tabs";
 const CURRENT_SEASON = new Date().getFullYear();
 const PREVIOUS_SEASON = CURRENT_SEASON - 1;
 
@@ -39,6 +40,7 @@ const SAVANT_PARK_FACTORS_URL = `https://baseballsavant.mlb.com/leaderboard/stat
 const TEAMRANKINGS_RUN_DIFF_URL = "https://www.teamrankings.com/mlb/stat/run-differential";
 const BR_WIN_PROB_BATTING_URL = `https://www.baseball-reference.com/leagues/majors/${CURRENT_SEASON}-win_probability-batting.shtml`;
 const BR_WIN_PROB_PITCHING_URL = `https://www.baseball-reference.com/leagues/majors/${CURRENT_SEASON}-win_probability-pitching.shtml`;
+const FIC_K_PROJECTIONS_URL = "https://www.fantasyinfocentral.com/betting/mlb/k-predictions";
 const SAVANT_FIRST_INNING_PITCHERS_URL = `https://baseballsavant.mlb.com/statcast_search?hfPT=&hfAB=&hfGT=R%7C&hfPR=&hfZ=&hfStadium=&hfBBL=&hfNewZones=&hfPull=&hfC=&hfSea=${CURRENT_SEASON}%7C${PREVIOUS_SEASON}%7C&hfSit=&player_type=pitcher&hfOuts=&home_road=&pitcher_throws=&batter_stands=&hfSA=&hfEventOuts=&hfEventRuns=&game_date_gt=&game_date_lt=&hfMo=&hfTeam=&hfOpponent=&hfRO=&position=&hfInfield=&hfOutfield=&hfInn=1%7C&hfBBT=&hfFlag=is%5C.%5C.bunt%5C.%5C.not%7C&metric_1=&group_by=name&min_pitches=0&min_results=0&min_pas=0&sort_col=pitches&player_event_sort=api_p_release_speed&sort_order=desc&chk_stats_abs=on&chk_stats_hits=on&chk_stats_singles=on&chk_stats_hrs=on&chk_stats_k_percent=on&chk_stats_hbp=on&chk_stats_whiffs=on&chk_stats_ba=on&chk_stats_xba=on&chk_stats_barrels_total=on&chk_stats_swing_miss_percent=on&chk_stats_unadj_run_exp=on&chk_stats_unadj_pitcher_run_exp=on&chk_stats_unadj_pitcher_run_value_per_100=on&chk_stats_launch_speed=on&chk_stats_barrels_per_pa_percent=on#results`;
 const SAVANT_FIRST_INNING_BATTERS_URL = `https://baseballsavant.mlb.com/statcast_search?hfPT=&hfAB=&hfGT=R%7C&hfPR=&hfZ=&hfStadium=&hfBBL=&hfNewZones=&hfPull=&hfC=&hfSea=${CURRENT_SEASON}%7C${PREVIOUS_SEASON}%7C&hfSit=&player_type=batter&hfOuts=&home_road=&pitcher_throws=&batter_stands=&hfSA=&hfEventOuts=&hfEventRuns=&game_date_gt=&game_date_lt=&hfMo=&hfTeam=&hfOpponent=&hfRO=&position=&hfInfield=&hfOutfield=&hfInn=1%7C&hfBBT=&hfFlag=is%5C.%5C.bunt%5C.%5C.not%7Cis%5C.%5C.competitive%7C&metric_1=&group_by=name&min_pitches=0&min_results=0&min_pas=0&sort_col=pitches&player_event_sort=api_p_release_speed&sort_order=desc&chk_stats_abs=on&chk_stats_hits=on&chk_stats_singles=on&chk_stats_hrs=on&chk_stats_k_percent=on&chk_stats_hbp=on&chk_stats_whiffs=on&chk_stats_ba=on&chk_stats_xba=on&chk_stats_barrels_total=on&chk_stats_swing_miss_percent=on&chk_stats_unadj_run_exp=on&chk_stats_launch_speed=on&chk_stats_hardhit_percent=on&chk_stats_barrels_per_pa_percent=on&chk_stats_sweetspot_speed_mph=on#results`;
 const SEARCH_CACHE_MS = 1000 * 60 * 20;
@@ -191,7 +193,21 @@ type MatchedGameContext = {
   homeBatters: BatterStat[];
   rotowireLine: string | null;
   rotowireTotal: number | null;
+  umpireKpg: number | null;
+  weather: string | null;
   lineupsConfirmed: boolean;
+};
+
+type ExternalKProjection = {
+  pitcherLabel: string;
+  opponentLabel: string;
+  prediction: number | null;
+  recentStrikeouts: number[];
+  line: number | null;
+  overPrice: number | null;
+  underPrice: number | null;
+  umpireKpg: number | null;
+  source: string;
 };
 
 type FirstInningPitcherSplit = {
@@ -272,6 +288,8 @@ type RecentPitcherStat = {
   kPercent: number;
   bbPercent: number;
   hrPer9: number;
+  starts: number;
+  strikeouts: number;
 };
 
 type TeamBullpenStat = {
@@ -373,6 +391,7 @@ let teamPitchingWinProbCache: CacheEntry<Map<string, TeamWinProbStat>> | null = 
 let teamParkFactorCache: CacheEntry<Map<string, TeamParkFactorStat>> | null = null;
 let recentBatterCache: CacheEntry<Map<string, RecentBatterStat>> | null = null;
 let recentPitcherCache: CacheEntry<Map<string, RecentPitcherStat>> | null = null;
+let externalKProjectionCache: CacheEntry<ExternalKProjection[]> | null = null;
 let teamBullpenCache: CacheEntry<Map<string, TeamBullpenStat>> | null = null;
 let teamDefensePromise: Promise<Map<string, TeamDefenseStat>> | null = null;
 let teamBattingWinProbPromise: Promise<Map<string, TeamWinProbStat>> | null = null;
@@ -1114,7 +1133,9 @@ async function loadRecentPlayerStats() {
           whip: parseDecimal(String(stat.whip || 0)),
           kPercent: safeRate(parseNumber(String(stat.strikeOuts || 0)), battersFaced) * 100,
           bbPercent: safeRate(parseNumber(String(stat.baseOnBalls || 0)), battersFaced) * 100,
-          hrPer9: parseDecimal(String(stat.homeRunsPer9 || 0))
+          hrPer9: parseDecimal(String(stat.homeRunsPer9 || 0)),
+          starts: parseNumber(String(stat.gamesStarted || 0)),
+          strikeouts: parseNumber(String(stat.strikeOuts || 0))
         });
       });
 
@@ -1723,7 +1744,8 @@ async function scrapePublicSources() {
     { key: "savant-expected", label: "Savant Expected Statistics", url: SAVANT_EXPECTED_URL },
     { key: "savant-park-factors", label: "Savant Park Factors", url: SAVANT_PARK_FACTORS_URL },
     { key: "savant-1st-pitchers", label: "Savant 1st Inning Pitchers", url: SAVANT_FIRST_INNING_PITCHERS_URL },
-    { key: "savant-1st-batters", label: "Savant 1st Inning Batters", url: SAVANT_FIRST_INNING_BATTERS_URL }
+    { key: "savant-1st-batters", label: "Savant 1st Inning Batters", url: SAVANT_FIRST_INNING_BATTERS_URL },
+    { key: "fic-k-projections", label: "Fantasy Info Central K Predictions", url: FIC_K_PROJECTIONS_URL }
   ];
 
   return await Promise.all(
@@ -2092,6 +2114,8 @@ function matchGameContext(gameContext: string): MatchedGameContext | null {
       .map((name) => findBatterStat(name))),
     rotowireLine,
     rotowireTotal: Number.isFinite(rotowireTotal) ? rotowireTotal : null,
+    umpireKpg: parseOptionalNumber(gameContext.match(/Umpire K\/G:\s*([\d.]+)/i)?.[1]),
+    weather: gameContext.match(/Weather:\s*([^\n]+)/i)?.[1]?.trim() || null,
     lineupsConfirmed: /confirmed lineups?/i.test(gameContext)
   };
 }
@@ -2110,8 +2134,96 @@ function matchGameCard(card: GameCard): MatchedGameContext {
     homeBatters: compactBatters((card.homeLineup || []).map((batter) => findBatterStat(batter.name))),
     rotowireLine: card.line,
     rotowireTotal: Number.isFinite(parsedTotal) ? parsedTotal : null,
+    umpireKpg: parseOptionalNumber(card.umpireKpg),
+    weather: card.weather,
     lineupsConfirmed: card.confirmed
   };
+}
+
+function extractStrikeoutPropLine(message: string) {
+  const patterns = [
+    /(?:strikeouts?|\bks?\b|k\s*prop)[^\d]{0,24}(\d+(?:\.5)?)/i,
+    /(?:line(?:\s+(?:of|at))?|over|under|\bo\b|\bu\b)\s*(\d+(?:\.5)?)/i,
+    /(\d+(?:\.5)?)\s*(?:strikeouts?|\bks?\b)/i
+  ];
+  for (const pattern of patterns) {
+    const value = Number(pattern.exec(message)?.[1]);
+    if (Number.isFinite(value) && value >= 0.5 && value <= 15.5) return value;
+  }
+  return null;
+}
+
+function parseAmericanPrice(value: string) {
+  const match = value.match(/(?:^|\s)([+-]\d{3,4})(?:\s|$)/);
+  return match ? Number(match[1]) : null;
+}
+
+function parseExternalKProjections(html: string) {
+  const $ = cheerio.load(html);
+  const table = $("table").filter((_, element) =>
+    /Most Predicted Ks/i.test(cleanText($(element).find("caption").text()))
+  ).first();
+  const rows: ExternalKProjection[] = [];
+
+  table.find("tbody tr").each((_, row) => {
+    const cells = $(row).find("td").map((__, cell) => cleanText($(cell).text())).get();
+    if (cells.length < 10) return;
+    const pitcherLabel = cells[0];
+    const prediction = parseOptionalNumber(cells[4]);
+    if (!pitcherLabel || prediction === null) return;
+    const recentStrikeouts = Array.from(cells[5].matchAll(/\b(\d{1,2})\b/g))
+      .slice(0, 5)
+      .map((match) => Number(match[1]));
+    const umpireMatch = cells[9].match(/\(([\d.]+)\s*\/gm\)/i);
+    rows.push({
+      pitcherLabel,
+      opponentLabel: cells[1] || "",
+      prediction,
+      recentStrikeouts,
+      line: parseOptionalNumber(cells[6]),
+      overPrice: parseAmericanPrice(cells[7]),
+      underPrice: parseAmericanPrice(cells[8]),
+      umpireKpg: umpireMatch ? Number(umpireMatch[1]) : null,
+      source: "Fantasy Info Central"
+    });
+  });
+
+  return rows;
+}
+
+function surnameToken(value: string) {
+  const tokens = nameTokens(value).filter((token) => !["jr", "sr", "ii", "iii", "iv"].includes(token));
+  return tokens[tokens.length - 1] || "";
+}
+
+function findExternalKProjection(pitcherName: string, rows: ExternalKProjection[]) {
+  const surname = surnameToken(pitcherName);
+  if (!surname) return null;
+  const matches = rows.filter((row) => surnameToken(row.pitcherLabel) === surname);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+async function loadExternalKProjections() {
+  if (modelCacheFresh(externalKProjectionCache)) return externalKProjectionCache!.value;
+  const sourceKey = "fic-k-projections";
+  recordSourceAttempt(sourceKey);
+  try {
+    const rows = parseExternalKProjections(await fetchHtml(FIC_K_PROJECTIONS_URL));
+    if (rows.length < 10) throw new Error(`FIC strikeout feed was incomplete (${rows.length} rows)`);
+    externalKProjectionCache = { fetchedAt: Date.now(), value: rows };
+    recordSourceSuccess(sourceKey, rows.length);
+    return rows;
+  } catch (error) {
+    recordSourceFailure(sourceKey, error);
+    externalKProjectionCache = { fetchedAt: Date.now(), value: externalKProjectionCache?.value || [] };
+    return externalKProjectionCache.value;
+  }
+}
+
+function parseOptionalNumber(value: string | null | undefined) {
+  if (value === null || value === undefined || !String(value).trim()) return null;
+  const parsed = parseNumber(String(value));
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function matchedGameId(game: MatchedGameContext, date = mlbCalendarDate()) {
@@ -2281,18 +2393,92 @@ function rankOffense(lineup: BatterStat[], recentStats = new Map<string, RecentB
 async function firstInningProjection(game: MatchedGameContext) {
   const halves = await combinedNrfiScore(game);
   const total = game.rotowireTotal;
-  const totalAdjustment = total !== null ? (total <= 7.5 ? 3 : total >= 9 ? -3 : 0) : 0;
-  const nrfiScore = halves.combined + totalAdjustment;
-  const pick: FirstInningPick = nrfiScore >= 58 ? "NRFI" : "YRFI";
+  const rawProbability = estimateFirstInningProbability({
+    awayHalfPreventionScore: halves.awayHalf,
+    homeHalfPreventionScore: halves.homeHalf,
+    gameTotal: null
+  });
+  const probability = estimateFirstInningProbability({
+    awayHalfPreventionScore: halves.awayHalf,
+    homeHalfPreventionScore: halves.homeHalf,
+    gameTotal: total
+  });
+  const nrfiScore = probability.nrfiProbability * 100;
+  const pick: FirstInningPick = probability.pick;
   return {
     ...halves,
-    rawCombinedScore: halves.combined,
+    ...probability,
+    rawCombinedScore: rawProbability.nrfiProbability * 100,
     total,
-    totalAdjustment,
+    totalAdjustment: (probability.nrfiProbability - rawProbability.nrfiProbability) * 100,
     nrfiScore,
     pick,
-    pickScore: pick === "NRFI" ? nrfiScore : 70 - nrfiScore,
+    pickScore: probability.pickProbability * 100,
     dataQuality: firstInningDataQuality(game, total)
+  };
+}
+
+function lineupStrikeoutRate(lineup: BatterStat[], recentBatters: Map<string, RecentBatterStat>) {
+  if (!lineup.length) return null;
+  return average(lineup.map((batter) => {
+    const recent = recentBatters.get(normalizeName(statDisplayName(batter["last_name, first_name"]))) || null;
+    const recentWeight = recent ? Math.min(0.35, recent.pa / 120 * 0.35) : 0;
+    return batter.k_percent * (1 - recentWeight) + (recent?.kPercent ?? batter.k_percent) * recentWeight;
+  }));
+}
+
+function buildPitcherKProjection(
+  pitcher: PitcherStat,
+  lineup: BatterStat[],
+  game: MatchedGameContext | null,
+  recentPitchers: Map<string, RecentPitcherStat>,
+  recentBatters: Map<string, RecentBatterStat>,
+  externalRows: ExternalKProjection[],
+  manualPropLine: number | null = null
+) {
+  const name = statDisplayName(pitcher["last_name, first_name"]);
+  const recent = recentPitchers.get(normalizeName(name)) || null;
+  const external = findExternalKProjection(name, externalRows);
+  const chaseMissRate = pitcher.out_zone_swing_miss_percent
+    ?? (pitcher.pa ? pitcher.out_zone_swing_miss / pitcher.pa * 100 : 0);
+  const swordsRate = pitcher.swords_per_100_pa
+    ?? (pitcher.pa ? pitcher.swords / pitcher.pa * 100 : 0);
+  const lineupKPercent = lineupStrikeoutRate(lineup, recentBatters);
+  const propLine = manualPropLine ?? external?.line ?? null;
+  const umpireKpg = game?.umpireKpg ?? external?.umpireKpg ?? null;
+  const projection = estimateStrikeoutProjection({
+    seasonKPercent: pitcher.k_percent,
+    seasonBattersFaced: pitcher.pa,
+    recentKPercent: recent?.kPercent ?? null,
+    recentBattersFaced: recent?.battersFaced ?? 0,
+    recentInnings: recent?.innings ?? 0,
+    recentStarts: recent?.starts ?? 0,
+    lineupKPercent,
+    lineupCoverage: Math.min(1, lineup.length / 9),
+    whiffPercent: pitcher.whiff_percent,
+    chaseMissPercent: chaseMissRate,
+    swordsPer100BattersFaced: swordsRate,
+    walkPercent: pitcher.bb_percent,
+    umpireKPerGame: umpireKpg,
+    externalProjection: external?.prediction ?? null,
+    propLine
+  });
+
+  return {
+    ...projection,
+    pitcherName: name,
+    recentKPercent: recent?.kPercent ?? null,
+    recentStarts: recent?.starts ?? 0,
+    lineupCoverage: Math.min(1, lineup.length / 9),
+    whiffPercent: pitcher.whiff_percent,
+    chaseMissRate,
+    swordsRate,
+    umpireKpg,
+    externalProjection: external?.prediction ?? null,
+    externalRecentStrikeouts: external?.recentStrikeouts ?? [],
+    overPrice: external?.overPrice ?? null,
+    underPrice: external?.underPrice ?? null,
+    externalSource: external ? external.source : null
   };
 }
 
@@ -2849,7 +3035,9 @@ async function pollConfirmedPregameSnapshots() {
 }
 
 function firstInningPerformance(): FirstInningPerformance {
-  return evaluateFirstInningPerformance(readFirstInningFeatureSnapshots(), readFirstInningResults());
+  const currentSnapshots = readFirstInningFeatureSnapshots()
+    .filter((snapshot) => snapshot.analysisVersion === ANALYSIS_VERSION);
+  return evaluateFirstInningPerformance(currentSnapshots, readFirstInningResults());
 }
 
 function averageOrNull(values: number[]) {
@@ -3102,6 +3290,7 @@ function clearModelCaches() {
   teamParkFactorCache = null;
   recentBatterCache = null;
   recentPitcherCache = null;
+  externalKProjectionCache = null;
   teamBullpenCache = null;
 }
 
@@ -3116,6 +3305,9 @@ async function runMorningRefresh(reason: "startup" | "scheduled" | "stale" | "ma
       ["run differential", loadTeamRunDifferentials()],
       ["recent team form", loadLastFiveRunDifferentials()],
       ["recent player form", loadRecentPlayerStats()],
+      ["external K projections", loadExternalKProjections()],
+      ["first-inning pitcher splits", loadFirstInningPitcherSplits()],
+      ["first-inning batter splits", loadFirstInningBatterSplits()],
       ["bullpen", loadTeamBullpenStats()],
       ["defense", loadTeamDefenseStats()],
       ["batting win probability", loadTeamWinProbabilityStats("batting")],
@@ -3230,28 +3422,47 @@ async function chooseBestGeneralBet(game: MatchedGameContext) {
   };
 }
 
-async function analyzePitcherStrikeouts(pitcher: PitcherStat, lineup: BatterStat[]) {
-  const [recentPitchers, recentBatters] = await Promise.all([loadRecentPitcherStats(), loadRecentBatterStats()]);
-  const recentPitcher = recentPitchers.get(normalizeName(statDisplayName(pitcher["last_name, first_name"]))) || null;
-  const lineupK = lineup.length ? average(lineup.map((batter) => {
-    const recent = recentBatters.get(normalizeName(statDisplayName(batter["last_name, first_name"]))) || null;
-    return recent?.kPercent ?? batter.k_percent;
-  })) : null;
-  const score = rankPitcherForKs(pitcher, lineup, recentPitcher, recentBatters);
-  const pick = score >= 60 ? "Over" : "Under";
-  const chaseMissRate = pitcher.out_zone_swing_miss_percent
-    ?? (pitcher.pa ? pitcher.out_zone_swing_miss / pitcher.pa * 100 : 0);
-  const swordsRate = pitcher.swords_per_100_pa
-    ?? (pitcher.pa ? pitcher.swords / pitcher.pa * 100 : 0);
+async function analyzePitcherStrikeouts(
+  pitcher: PitcherStat,
+  lineup: BatterStat[],
+  game: MatchedGameContext | null = null,
+  manualPropLine: number | null = null
+) {
+  const [recentPitchers, recentBatters, externalRows] = await Promise.all([
+    loadRecentPitcherStats(),
+    loadRecentBatterStats(),
+    loadExternalKProjections()
+  ]);
+  const projection = buildPitcherKProjection(
+    pitcher,
+    lineup,
+    game,
+    recentPitchers,
+    recentBatters,
+    externalRows,
+    manualPropLine
+  );
+  const lineDecision = projection.propLine !== null
+    ? `Model edge **${projection.edge! >= 0 ? "+" : ""}${formatNumber(projection.edge!)} Ks** versus the **${formatNumber(projection.propLine)}** line${projection.overPrice !== null || projection.underPrice !== null ? ` (Over ${projection.overPrice ?? "n/a"}, Under ${projection.underPrice ?? "n/a"})` : ""}.`
+    : `No verified prop line is available. Actionable threshold: **Over ${Math.max(0.5, Math.floor((projection.projectedStrikeouts - 0.35) * 2) / 2)} or lower; Under ${Math.ceil((projection.projectedStrikeouts + 0.35) * 2) / 2} or higher**.`;
+  const recommendationText = projection.propLine !== null
+    ? `**${Math.abs(projection.edge!) < 0.5 ? "Lean " : ""}${projection.pick} ${formatNumber(projection.propLine)} strikeouts**`
+    : `**${formatNumber(projection.projectedStrikeouts)} projected Ks; use the listed line thresholds**`;
+  const recommendationTag = projection.propLine === null || Math.abs(projection.edge!) < 0.5
+    ? "🟡"
+    : recommendation(projection.strength, 64, 55);
 
   return [
-    `**${statDisplayName(pitcher["last_name, first_name"])} strikeout outlook**`,
-    `${sampleTag(pitcher.pa)} season K% **${formatNumber(pitcher.k_percent)}**, 30-day K% **${formatNumber(recentPitcher?.kPercent ?? pitcher.k_percent)}**, whiff **${formatNumber(pitcher.whiff_percent)}%**, chase-miss rate **${formatNumber(chaseMissRate)}%**, swords **${formatNumber(pitcher.swords, 0)}** (${formatNumber(swordsRate)} per 100 BF).`,
-    `The swing-and-miss profile is ${pitcher.k_percent >= 28 || pitcher.whiff_percent >= 30 ? "strong" : "more contact-prone"}, while BB% at **${formatNumber(pitcher.bb_percent)}** ${pitcher.bb_percent > 10 ? "adds pitch-count risk." : "keeps the outing on track."} Savant-style support here is the whiff/chase side plus the strikeout-quality inputs like swords.`,
-    lineupK !== null
-      ? `Matched lineup K% is **${formatNumber(lineupK)}%**, so the opponent ${lineupK >= 24 ? "does give him extra upside." : "is not an especially soft strikeout target."}`
-      : "No confirmed lineup match was available, so this leans more on the pitcher skill set than opponent tendencies.",
-    `${recommendation(score)} Recommendation: **${pick}** the strikeout prop. ${pick === "Over" ? "The bat-missing skill set is strong enough to back the aggressive side." : "The risk around pitch count and weaker opponent strikeout support makes the conservative side better."}`
+    `**${projection.pitcherName} strikeout projection**`,
+    `Projected strikeouts: **${formatNumber(projection.projectedStrikeouts)}** over approximately **${formatNumber(projection.projectedInnings)} innings / ${formatNumber(projection.projectedBattersFaced)} BF**. Adjusted matchup K rate: **${formatNumber(projection.adjustedKPercent)}%**.`,
+    `${sampleTag(pitcher.pa)} season K% **${formatNumber(pitcher.k_percent)}**, 30-day K% **${formatNumber(projection.recentKPercent ?? pitcher.k_percent)}**, whiff **${formatNumber(projection.whiffPercent)}%**, chase-miss **${formatNumber(projection.chaseMissRate)}%**, swords **${formatNumber(projection.swordsRate)} per 100 BF**.`,
+    projection.opponentKPercent !== null
+      ? `Matched lineup K% is **${formatNumber(projection.opponentKPercent)}%** with **${formatNumber(projection.lineupCoverage * 100, 0)}% lineup coverage**.`
+      : "The opponent batting order is not matched yet, so the projection uses a league-average opponent and should be revisited after lineups confirm.",
+    `${projection.umpireKpg !== null ? `Umpire context: **${formatNumber(projection.umpireKpg)} K/game**. ` : ""}${projection.externalProjection !== null ? `External cross-check: **${formatNumber(projection.externalProjection)} Ks** from ${projection.externalSource}; it receives a bounded 12% consensus weight.` : "No external projection was available; the number is entirely from the local model."}`,
+    lineDecision,
+    `Evidence quality: **${formatNumber(projection.dataQuality * 100, 0)}%**. This is a projection/edge score, not a claimed hit probability.`,
+    `${recommendationTag} Recommendation: ${recommendationText}.`
   ].join("\n\n");
 }
 
@@ -3280,13 +3491,13 @@ async function analyzeFullInningNrfi(game: MatchedGameContext) {
 
   return [
     `**${game.away} @ ${game.home} NRFI/YRFI outlook**`,
-    `${game.away} first-inning scoring threat vs ${game.homePitcher ? statDisplayName(game.homePitcher["last_name, first_name"]) : game.home + " starter"}: **${formatNumber(projection.awayHalf)}**.`,
-    `${game.home} first-inning scoring threat vs ${game.awayPitcher ? statDisplayName(game.awayPitcher["last_name, first_name"]) : game.away + " starter"}: **${formatNumber(projection.homeHalf)}**.`,
-    `Combined first-inning model score: **${formatNumber(projection.nrfiScore)}**${projection.totalAdjustment ? ` (raw **${formatNumber(projection.rawCombinedScore)}**, adjusted **${projection.totalAdjustment > 0 ? "+" : ""}${formatNumber(projection.totalAdjustment)}** for the **${formatNumber(projection.total || 0, 1)}** game total)` : ""}. This is a ranking score, not a win probability.`,
+    `Top half: **${formatNumber(projection.awayHalfNoRunProbability * 100)}% estimated no-run chance** for ${game.away} vs ${game.homePitcher ? statDisplayName(game.homePitcher["last_name, first_name"]) : game.home + " starter"}.`,
+    `Bottom half: **${formatNumber(projection.homeHalfNoRunProbability * 100)}% estimated no-run chance** for ${game.home} vs ${game.awayPitcher ? statDisplayName(game.awayPitcher["last_name, first_name"]) : game.away + " starter"}.`,
+    `Full-inning estimate: **NRFI ${formatNumber(projection.nrfiProbability * 100)}% / YRFI ${formatNumber(projection.yrfiProbability * 100)}%**${projection.totalAdjustment ? ` (bounded **${projection.totalAdjustment > 0 ? "+" : ""}${formatNumber(projection.totalAdjustment)} point** adjustment for the **${formatNumber(projection.total || 0, 1)}** game total)` : ""}. These are pre-calibration model estimates, not sportsbook-implied probabilities.`,
     "NRFI requires both the top half and the bottom half to stay scoreless, so this recommendation is combining both sides of the inning instead of grading only one pitcher.",
     `Prospective validation: **${report.gradedCount}** graded, **${report.accuracy === null ? "n/a" : formatNumber(report.accuracy * 100) + "%"}** accuracy; accuracy approval is **${report.approved ? "active" : "not active"}**. An offered price is still required to determine betting value.`,
-    `${projection.awayHalf >= 58 && projection.homeHalf >= 58 ? "Both halves clear the bar for a cleaner first inning." : "One side of the inning is introducing enough run risk to weaken the full NRFI case."}`,
-    `${recommendation(projection.nrfiScore, 62, 54)} Recommendation: **${pick}**. ${pick === "NRFI" ? "Both halves are strong enough to back a scoreless full first inning." : "The full first inning is too vulnerable, so YRFI is the better side."}`
+    `${Math.min(projection.awayHalfNoRunProbability, projection.homeHalfNoRunProbability) >= 0.72 ? "Both halves support a cleaner first inning." : "One half is introducing enough run risk to weaken the full NRFI case."}`,
+    `${report.approved ? recommendation(projection.pickScore, 62, 54) : "🟡"} Recommendation: **${pick}** ${report.approved ? "at the better of the available market price" : "as a watchlist side while prospective validation accumulates"}; the model side is **${formatNumber(projection.pickProbability * 100)}%** before calibration.`
   ].join("\n\n");
 }
 
@@ -3358,21 +3569,76 @@ async function topPitcherList(mode: "strikeouts" | "nrfi") {
   ].join("\n\n");
 }
 
+async function buildSlateMarkets() {
+  const payload = await loadDailyLineups();
+  const [recentPitchers, recentBatters, externalRows] = await Promise.all([
+    loadRecentPitcherStats(),
+    loadRecentBatterStats(),
+    loadExternalKProjections()
+  ]);
+  const nrfi: Array<Record<string, unknown>> = [];
+  const strikeouts: Array<Record<string, unknown>> = [];
+
+  for (const card of payload.games) {
+    const game = matchGameCard(card);
+    const projection = await firstInningProjection(game);
+    nrfi.push({
+      gameId: card.gameId,
+      away: game.away,
+      home: game.home,
+      gameTime: card.gameTime,
+      awayStarter: game.awayPitcher ? statDisplayName(game.awayPitcher["last_name, first_name"]) : card.awayP?.name || null,
+      homeStarter: game.homePitcher ? statDisplayName(game.homePitcher["last_name, first_name"]) : card.homeP?.name || null,
+      pick: projection.pick,
+      pickProbability: projection.pickProbability,
+      nrfiProbability: projection.nrfiProbability,
+      yrfiProbability: projection.yrfiProbability,
+      awayHalfNoRunProbability: projection.awayHalfNoRunProbability,
+      homeHalfNoRunProbability: projection.homeHalfNoRunProbability,
+      total: projection.total,
+      dataQuality: projection.dataQuality,
+      confirmed: game.lineupsConfirmed
+    });
+
+    const starters = [
+      { pitcher: game.awayPitcher, lineup: game.homeBatters, opponent: game.home },
+      { pitcher: game.homePitcher, lineup: game.awayBatters, opponent: game.away }
+    ];
+    starters.forEach(({ pitcher, lineup, opponent }) => {
+      if (!pitcher) return;
+      strikeouts.push({
+        gameId: card.gameId,
+        away: game.away,
+        home: game.home,
+        gameTime: card.gameTime,
+        opponent,
+        confirmed: game.lineupsConfirmed,
+        ...buildPitcherKProjection(pitcher, lineup, game, recentPitchers, recentBatters, externalRows)
+      });
+    });
+  }
+
+  nrfi.sort((left, right) => Number(right.pickProbability) - Number(left.pickProbability));
+  strikeouts.sort((left, right) => {
+    const leftEdge = left.edge === null ? Number(left.strength) - 50 : Math.abs(Number(left.edge)) * 10 + Number(left.strength);
+    const rightEdge = right.edge === null ? Number(right.strength) - 50 : Math.abs(Number(right.edge)) * 10 + Number(right.strength);
+    return rightEdge - leftEdge;
+  });
+
+  return {
+    generatedAt: new Date().toISOString(),
+    externalKSource: FIC_K_PROJECTIONS_URL,
+    externalKRows: externalRows.length,
+    firstInningPerformance: firstInningPerformance(),
+    nrfi,
+    strikeouts
+  };
+}
+
 async function topNrfiGamesFromSlate() {
   try {
-    const payload = await loadDailyLineups();
-    const ranked = (await Promise.all(payload.games.map(async (game) => {
-        const matched = matchGameCard(game);
-        const projection = await firstInningProjection(matched);
-        return {
-          game,
-          matched,
-          projection
-        };
-      })))
-      .filter(({ matched }) => matched.awayPitcher || matched.homePitcher || matched.awayBatters.length || matched.homeBatters.length)
-      .sort((a, b) => b.projection.nrfiScore - a.projection.nrfiScore)
-      .slice(0, 5);
+    const board = await buildSlateMarkets();
+    const ranked = board.nrfi.slice(0, 8) as Array<Record<string, any>>;
 
     if (!ranked.length) {
       return [
@@ -3384,17 +3650,49 @@ async function topNrfiGamesFromSlate() {
 
     return [
       "**Best NRFI/YRFI games today**",
-      `First-inning recommendations are currently **${firstInningPerformance().approved ? "prospectively approved" : "watchlist-only while results accumulate"}**. Scores below are ranking scores, not probabilities.`,
-      ...ranked.map(({ matched, projection }, index) => {
-        return `${index + 1}. **${matched.away} @ ${matched.home}**: top half **${formatNumber(projection.awayHalf)}**, bottom half **${formatNumber(projection.homeHalf)}**, combined model score **${formatNumber(projection.nrfiScore)}**. Lean: **${projection.pick}**.`;
+      `First-inning recommendations are currently **${firstInningPerformance().approved ? "prospectively approved" : "watchlist-only while results accumulate"}**. Percentages are pre-calibration model estimates, not sportsbook-implied probabilities.`,
+      ...ranked.map((row, index) => {
+        return `${index + 1}. **${row.away} @ ${row.home}**: top-half no-run **${formatNumber(row.awayHalfNoRunProbability * 100)}%**, bottom-half no-run **${formatNumber(row.homeHalfNoRunProbability * 100)}%**; **NRFI ${formatNumber(row.nrfiProbability * 100)}% / YRFI ${formatNumber(row.yrfiProbability * 100)}%**. Lean: **${row.pick}**; evidence **${formatNumber(row.dataQuality * 100, 0)}%**.`;
       }),
-      `${recommendation(ranked[0].projection.nrfiScore, 62, 54)} Recommendation: **${ranked[0].projection.pick} on ${ranked[0].matched.away} @ ${ranked[0].matched.home}** is the strongest full first-inning angle from the live slate.`
+      `${firstInningPerformance().approved ? recommendation(ranked[0].pickProbability * 100, 62, 54) : "🟡"} Recommendation: **${ranked[0].pick} on ${ranked[0].away} @ ${ranked[0].home}** is the strongest full first-inning ${firstInningPerformance().approved ? "angle" : "watchlist lean"} from the live slate.`
     ].join("\n\n");
   } catch (error) {
     return [
       "**Best NRFI/YRFI games today**",
       `I could not load the live slate just now: ${getErrorMessage(error)}.`,
       "\uD83D\uDFE1 Recommendation: **Select a game first** and I will grade the full first inning from both halves."
+    ].join("\n\n");
+  }
+}
+
+async function topStrikeoutPitchersFromSlate() {
+  try {
+    const board = await buildSlateMarkets();
+    const ranked = board.strikeouts.slice(0, 8) as Array<Record<string, any>>;
+    if (!ranked.length) {
+      return [
+        "**Pitcher strikeout board today**",
+        "Today's starters are not matched to measured Statcast records yet.",
+        "🟡 Recommendation: **Refresh after probable pitchers are posted**."
+      ].join("\n\n");
+    }
+
+    return [
+      "**Pitcher strikeout board today**",
+      `Projected Ks combine workload, season/recent K%, opposing lineup K tendency, whiff/chase/swords, umpire context, and a bounded external cross-check when available. External rows matched: **${board.externalKRows}**.`,
+      ...ranked.map((row, index) => {
+        const market = row.propLine !== null
+          ? `${row.pick} ${formatNumber(row.propLine)} (${row.edge >= 0 ? "+" : ""}${formatNumber(row.edge)} K edge)`
+          : `projection ${formatNumber(row.projectedStrikeouts)}; no verified line`;
+        return `${index + 1}. **${row.pitcherName} vs ${row.opponent}**: **${formatNumber(row.projectedStrikeouts)} projected Ks**, ${formatNumber(row.projectedInnings)} IP / ${formatNumber(row.projectedBattersFaced)} BF, opponent K% ${row.opponentKPercent === null ? "n/a" : formatNumber(row.opponentKPercent) + "%"}. **${market}**; evidence **${formatNumber(row.dataQuality * 100, 0)}%**.`;
+      }),
+      `${ranked[0].propLine !== null ? recommendation(ranked[0].strength, 64, 55) : "🟡"} Strongest current K ${ranked[0].propLine !== null ? "angle" : "projection watchlist"}: **${ranked[0].pitcherName} ${ranked[0].propLine !== null ? ranked[0].pick + " " + formatNumber(ranked[0].propLine) : formatNumber(ranked[0].projectedStrikeouts) + " projected Ks"}**.`
+    ].join("\n\n");
+  } catch (error) {
+    return [
+      "**Pitcher strikeout board today**",
+      `I could not load the live slate just now: ${getErrorMessage(error)}.`,
+      "🟡 Recommendation: **Select a starter and provide the sportsbook line for a direct projection comparison**."
     ].join("\n\n");
   }
 }
@@ -3520,6 +3818,7 @@ async function analyzeLocally({
   const inferredName = inferPlayerNameFromMessage(message);
   const pitcher = inferredName ? findPitcherStat(inferredName) : null;
   const batter = inferredName && !pitcher ? findBatterStat(inferredName) : null;
+  const strikeoutPropLine = extractStrikeoutPropLine(message);
 
   const wantsWinner = /winner|winners|moneyline|who wins|who win|win today|wins today|projected winner|projected winners/.test(normalized);
   const wantsNrfi = /nrfi|yrfi|first inning|no run first inning|run first inning/.test(normalized);
@@ -3535,7 +3834,7 @@ async function analyzeLocally({
           ? matchedGame.awayBatters
           : []
       : [];
-    return analyzePitcherStrikeouts(pitcher, opponentLineup);
+    return analyzePitcherStrikeouts(pitcher, opponentLineup, matchedGame, strikeoutPropLine);
   }
 
   if (pitcher && betType === "nrfi") {
@@ -3561,7 +3860,15 @@ async function analyzeLocally({
   }
 
   if (wantsStrikeouts && wantsSlate && !pitcher && !batter) {
-    return topPitcherList("strikeouts");
+    return topStrikeoutPitchersFromSlate();
+  }
+
+  if (betType === "strikeouts" && !pitcher && !batter) {
+    return topStrikeoutPitchersFromSlate();
+  }
+
+  if (betType === "nrfi" && !pitcher && !batter) {
+    return matchedGame ? analyzeFullInningNrfi(matchedGame) : topNrfiGamesFromSlate();
   }
 
   if (betType === "winner" && matchedGame) {
@@ -3570,7 +3877,7 @@ async function analyzeLocally({
 
   if (pitcher) {
     return pitcher.k_percent >= 26
-      ? analyzePitcherStrikeouts(pitcher, [])
+      ? analyzePitcherStrikeouts(pitcher, [], matchedGame, strikeoutPropLine)
       : analyzePitcherNrfi(pitcher, [], "the opposing lineup");
   }
 
@@ -3579,7 +3886,7 @@ async function analyzeLocally({
   }
 
   if (/best .*k|best pitchers|strikeout upside|k pitchers/i.test(message) || (wantsStrikeouts && wantsSlate)) {
-    return topPitcherList("strikeouts");
+    return topStrikeoutPitchersFromSlate();
   }
 
   if (wantsNrfi) {
@@ -3648,7 +3955,7 @@ app.get("/api/health", (_req, res) => {
     anthropicConfigured: true,
     analysisMode: "local",
     analysisVersion: ANALYSIS_VERSION,
-    publicSourceCount: 10,
+    publicSourceCount: 11,
     oddsSourceConfigured: Boolean(cleanText(process.env.ODDS_API_KEY || "")),
     oddsSourceError: oddsLastError,
     oddsBookmaker: ODDS_BOOKMAKER,
@@ -3770,6 +4077,14 @@ app.get("/api/lineups", async (_req, res) => {
   }
 });
 
+app.get("/api/slate-markets", async (_req, res) => {
+  try {
+    res.json({ ok: true, ...(await buildSlateMarkets()) });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: getErrorMessage(error) });
+  }
+});
+
 app.get("/api/schedule", async (_req, res) => {
   try {
     const payload = await loadSchedule();
@@ -3851,7 +4166,13 @@ app.get("/api/first-inning/history", async (req, res) => {
       };
     })
     .sort((a, b) => b.snapshotDate.localeCompare(a.snapshotDate) || a.gameId.localeCompare(b.gameId));
-  res.json({ ok: true, days, performance: firstInningPerformance(), games });
+  res.json({
+    ok: true,
+    days,
+    performance: firstInningPerformance(),
+    allVersionPerformance: evaluateFirstInningPerformance(readFirstInningFeatureSnapshots(), readFirstInningResults()),
+    games
+  });
 });
 
 app.get("/api/recommendations/history", async (req, res) => {

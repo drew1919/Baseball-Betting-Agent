@@ -20,7 +20,12 @@ export function evaluateFirstInningPerformance(
     .filter((row): row is NonNullable<typeof row> => row !== null);
   const gradedDates = [...new Set(graded.map((row) => row.snapshotDate))].sort();
   const recentDates = new Set(gradedDates.slice(-5));
-  const qualified = graded.filter((row) => row.dataQuality >= 0.85 && Math.abs(row.nrfiScore - 58) >= 3);
+  const qualified = graded.filter((row) => {
+    const clearEdge = row.analysisVersion.includes("actionable-prop-tabs")
+      ? Math.abs(row.nrfiScore - 50) >= 5
+      : Math.abs(row.nrfiScore - 58) >= 3;
+    return row.dataQuality >= 0.85 && clearEdge;
+  });
   const recent = graded.filter((row) => recentDates.has(row.snapshotDate));
   const nrfi = graded.filter((row) => row.pick === "NRFI");
   const yrfi = graded.filter((row) => row.pick === "YRFI");

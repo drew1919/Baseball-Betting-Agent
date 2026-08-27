@@ -22,7 +22,9 @@ Missing lineup slots are scored at a neutral 50 rather than allowing a partial l
 
 Complete-slate winner requests use the primary regression. Winner recommendations can enter `best bets` only when an independently trained no-total selective regression is also approved, rates the same side at 55% or higher, and agrees with a 55%+ primary prediction. This keeps forced projections visible without treating them as equally bettable.
 
-NRFI/YRFI uses both halves of inning one: the away offense against the home starter and the home offense against the away starter. Its displayed number is a model ranking score, not a probability. Pregame first-inning snapshots and official MLB inning-one results are stored separately from winner history. First-inning accuracy is not approved until at least 30 prospective games reach 55% overall accuracy, at least 15 high-quality/clear-edge games reach 60%, and the latest five slates remain at or above 55%. Before approval, the app still returns NRFI/YRFI watchlist leans. Even after the accuracy gate passes, an actual first-inning market price is required before a play can enter `best bets`, because hit rate alone does not establish positive expected value.
+NRFI/YRFI uses both halves of inning one: the away offense against the home starter and the home offense against the away starter. The model estimates each half-inning's no-run chance independently and multiplies them, because both halves must be scoreless for NRFI to win. The displayed NRFI/YRFI percentages are pre-calibration model estimates, not sportsbook-implied probabilities. Pregame first-inning snapshots and official MLB inning-one results are stored separately from winner history. First-inning accuracy is not approved until at least 30 prospective games reach 55% overall accuracy, at least 15 high-quality/clear-edge games reach 60%, and the latest five slates remain at or above 55%. Approval metrics are scoped to the current analysis version so a changed formula must earn its own record; older snapshots and results remain available as all-version audit history. Before approval, the app returns clearly labeled watchlist sides. Even after the accuracy gate passes, an actual first-inning market price is required before a play can enter `best bets`, because hit rate alone does not establish positive expected value.
+
+Pitcher-K projections estimate expected batters faced and innings from recent starts, then apply an adjusted strikeout rate built from season/recent K%, opposing-lineup K tendency, whiff%, chase misses, swords per 100 BF, command, and umpire K tendency. A verified sportsbook line converts the projection into an Over/Under edge; without one, the app reports a fair projection and actionable line thresholds rather than inventing a wager. Fantasy Info Central is an optional, bounded 12% consensus cross-check when its public page is server-accessible. Its failure never blocks or replaces the local model.
 
 ## Model Inputs
 
@@ -80,13 +82,14 @@ Open [http://localhost:3000](http://localhost:3000).
 | `EXPECTED_BATTERS_CSV_PATH` | No | `data/expected_stats_batters.csv` | Optional path for the persisted measured Savant batter feed |
 | `EXPECTED_PITCHERS_CSV_PATH` | No | `data/expected_stats_pitchers.csv` | Optional path for the persisted measured Savant pitcher feed |
 
-The analysis engine runs without API keys. When primary two-sided odds are unavailable, winner analysis uses RotoWire's listed pregame moneyline and an empirically fitted hold correction to estimate a complementary no-vig market probability. The market remains one bounded model input; it does not replace the statistical engine.
+The analysis engine runs without API keys. When primary two-sided odds are unavailable, winner analysis uses RotoWire's listed pregame moneyline and an empirically fitted hold correction to estimate a complementary no-vig market probability. The market remains one bounded model input; it does not replace the statistical engine. The current odds loader supplies game moneylines and totals; pitcher-K and first-inning prices must be entered in the question or supplied by an additional durable player-prop feed before the app labels them as verified market edges.
 
 ## Refresh Behavior
 
 - A full refresh runs at startup and daily at 09:05 America/New_York by default. Set `MORNING_REFRESH_TIME_ZONE` and `MORNING_REFRESH_HOUR` to override it.
 - RotoWire lineups are polled immediately after startup refresh and every ten minutes thereafter. Immutable winner and first-inning snapshots are created only after both batting orders are confirmed and MLB still reports the game as scheduled.
 - `/api/chat` triggers a guarded refresh when model data is older than eight hours or expected-stat CSVs are stale.
+- The optional Fantasy Info Central K cross-check is attempted during the morning refresh and cached for six hours; server blocking or an incomplete response leaves the independent local K projection active.
 - Failed refreshes are throttled and retain the last known-good files.
 - Measured Savant player files are validated for row count, player identity, and core K%, xwOBA, hard-hit, and barrel coverage before atomic replacement; incomplete scraper output cannot overwrite good data.
 - Source attempts, successes, row counts, errors, ages, and stale flags are exposed through `/api/health`.
@@ -109,6 +112,7 @@ The ignored `data/` directory contains the SQLite database and regenerated sourc
 |---|---|
 | `GET /api/health` | Model weights, coverage, source freshness, storage, and refresh status |
 | `GET /api/lineups` | Today's lineups and probable pitchers |
+| `GET /api/slate-markets` | Ranked NRFI/YRFI probabilities and pitcher-K projections/edges |
 | `GET /api/schedule` | MLB schedule |
 | `GET /api/odds` | Betting odds when configured |
 | `GET /api/sources` | Public-source scrape summaries |
@@ -128,3 +132,4 @@ The ignored `data/` directory contains the SQLite database and regenerated sourc
 - TeamRankings: season and venue run differential
 - Baseball Reference: batting and pitching win-probability impact
 - The-Odds-API: optional sportsbook lines
+- Fantasy Info Central: optional pitcher-K projection and prop-line cross-check
