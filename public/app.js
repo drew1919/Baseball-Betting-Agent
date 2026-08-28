@@ -7,9 +7,12 @@ var GAMES = [];
 var gameCtx = "";
 var manualCtx = "";
 var selectedGameIndex = -1;
-var mobileView = "games";
+var mobileView = "today";
 var marketBoardData = null;
 var marketBoardMode = null;
+var dashboardData = null;
+var dashboardActions = [];
+var dashboardExpanded = { nrfi: false, strikeouts: false, results: false };
 var betLabels = {
   general: "General",
   nrfi: "NRFI / YRFI",
@@ -136,9 +139,175 @@ async function loadHealth() {
       "Local Savant data " + data.statCounts.batters + " batters / " + data.statCounts.pitchers + " pitchers" + measuredStatus + " / MLB schedule + RotoWire + Savant leaderboards + 1st inning searches" + csvStatus + oddsStatus,
       "status-muted"
     );
+    var sourceSummary = document.getElementById("sourceSummary");
+    if (sourceSummary && data.publicSourceCount) sourceSummary.textContent = data.publicSourceCount + " sources configured";
   } catch (e) {
     setPill("apiStatus", "Backend check failed", "status-warn");
   }
+}
+
+async function fetchJson(url) {
+  var res = await fetch(url);
+  var data = await res.json();
+  if (!res.ok) throw new Error((data && data.error) || ("HTTP " + res.status));
+  return data;
+}
+
+function percent(value, fallback) {
+  return typeof value === "number" && isFinite(value) ? Math.round(value * 100) + "%" : (fallback || "--");
+}
+
+function dashboardAction(prompt, betType) {
+  var index = dashboardActions.length;
+  dashboardActions.push({ prompt: prompt, betType: betType });
+  return index;
+}
+
+function dashboardAsk(index) {
+  var action = dashboardActions[index];
+  if (!action) return;
+  activeBet = action.betType || activeBet;
+  document.querySelectorAll(".bet-btn").forEach(function (button) {
+    button.classList.toggle("on", button.getAttribute("data-bet") === activeBet);
+  });
+  updateBetState();
+  setWorkspaceView("chat");
+  ask(action.prompt);
+}
+
+function renderWinnerCard(row) {
+  var action = dashboardAction("Analyze " + row.predictedWinner + " to win " + row.away + " @ " + row.home, "winner");
+  var status = row.wagerQualified ? "Qualified" : "Watchlist";
+  return '<button class="dash-card" onclick="dashboardAsk(' + action + ')"><div class="dash-card-top"><span class="dash-matchup">'
+    + esc(row.away + " @ " + row.home) + '</span><span class="dash-status ' + (row.wagerQualified ? "qualified" : "") + '">' + status
+    + '</span></div><div class="dash-pick">' + esc(row.predictedWinner) + ' to win</div><div class="dash-metrics"><span class="dash-metric">Model '
+    + Number(row.confidence || 50).toFixed(1) + '%</span><span class="dash-metric muted">Edge ' + Number(row.edge || 0).toFixed(1)
+    + '</span></div><div class="dash-meta">Data coverage ' + Math.round((row.dataQuality || 0) * 100) + '% · '
+    + esc(row.predictionMethod || "Statistical model") + (row.marketLean ? " · Market leans " + esc(row.marketLean) : "") + '</div></button>';
+}
+
+function renderNrfiCard(row) {
+  var action = dashboardAction("Give me the full NRFI/YRFI analysis for " + row.away + " @ " + row.home, "nrfi");
+  return '<button class="dash-card" onclick="dashboardAsk(' + action + ')"><div class="dash-card-top"><span class="dash-matchup">'
+    + esc(row.away + " @ " + row.home) + '</span><span class="dash-status">Watchlist</span></div><div class="dash-pick">'
+    + esc(row.pick) + ' · ' + percent(row.pickProbability) + '</div><div class="dash-metrics"><span class="dash-metric">Top no-run '
+    + percent(row.awayHalfNoRunProbability) + '</span><span class="dash-metric muted">Bottom ' + percent(row.homeHalfNoRunProbability)
+    + '</span></div><div class="dash-meta">Data coverage ' + Math.round((row.dataQuality || 0) * 100) + '% · '
+    + (row.confirmed ? "Confirmed lineups" : "Projected lineups") + (row.total !== null ? " · Total " + esc(row.total) : "") + '</div></button>';
+}
+
+function renderStrikeoutCard(row) {
+  var prompt = "Analyze " + row.pitcherName + " strikeouts against " + row.opponent + " in " + row.away + " @ " + row.home
+    + (row.propLine !== null ? " at a line of " + row.propLine : " and give me the fair line");
+  var action = dashboardAction(prompt, "strikeouts");
+  var line = row.propLine !== null
+    ? row.pick + " " + Number(row.propLine).toFixed(1) + " · " + (row.edge >= 0 ? "+" : "") + Number(row.edge).toFixed(1) + " K edge"
+    : "Fair line needed";
+  return '<button class="dash-card" onclick="dashboardAsk(' + action + ')"><div class="dash-card-top"><span class="dash-matchup">'
+    + esc(row.pitcherName + " vs " + row.opponent) + '</span><span class="dash-status">Projection</span></div><div class="dash-pick">'
+    + Number(row.projectedStrikeouts).toFixed(1) + ' projected Ks</div><div class="dash-metrics"><span class="dash-metric">'
+    + Number(row.projectedInnings).toFixed(1) + ' IP</span><span class="dash-metric muted">Opp K% '
+    + (row.opponentKPercent === null ? "pending" : Number(row.opponentKPercent).toFixed(1) + "%")
+    + '</span></div><div class="dash-meta">' + esc(line) + ' · Data coverage ' + Math.round((row.dataQuality || 0) * 100) + '%</div></button>';
+}
+
+function renderResultCard(row) {
+  var won = row.correct === true;
+  var statusClass = won ? "result-win" : "result-loss";
+  return '<article class="dash-card result-card"><div class="dash-card-top"><span class="dash-matchup">' + esc(row.away + " @ " + row.home)
+    + '</span><span class="dash-status ' + statusClass + '">' + (won ? "Won" : "Lost") + '</span></div><div class="dash-pick">'
+    + esc(row.predictedWinner) + ' pick</div><div class="dash-metrics"><span class="dash-metric">Final ' + esc(row.finalScore || "--")
+    + '</span><span class="dash-metric muted">Winner ' + esc(row.actualWinner || "--") + '</span></div><div class="dash-meta">'
+    + esc(row.date) + ' · Model ' + Number(row.confidence || 50).toFixed(1) + '% · ' + (row.wagerQualified ? "Qualified bet" : "Full-slate forecast") + '</div></article>';
+}
+
+function renderTodayDashboard() {
+  if (!dashboardData) return;
+  dashboardActions = [];
+  var markets = dashboardData.markets || { nrfi: [], strikeouts: [] };
+  var history = dashboardData.history || { games: [], summary: {} };
+  var games = dashboardData.lineups || [];
+  var dates = (history.games || []).map(function (row) { return row.date; }).filter(Boolean).sort();
+  var latestDate = dates.length ? dates[dates.length - 1] : "";
+  var todayWinners = (history.games || []).filter(function (row) {
+    return row.date === latestDate && (row.status === "pending" || row.status === "live");
+  }).sort(function (a, b) { return (b.confidence || 50) - (a.confidence || 50); });
+  var qualified = todayWinners.filter(function (row) { return row.wagerQualified; });
+  var confirmed = games.filter(function (row) { return row.confirmed; }).length;
+  var prospective = history.summary && history.summary.prospective;
+  var recentResults = (history.games || []).filter(function (row) { return row.status === "graded" && row.correct !== null; });
+
+  document.getElementById("sumGames").textContent = games.length || todayWinners.length || 0;
+  document.getElementById("sumGamesNote").textContent = "Today's tracked matchups";
+  document.getElementById("sumBets").textContent = qualified.length;
+  document.getElementById("sumBetsNote").textContent = qualified.length ? "Cleared winner gates" : "No play forced";
+  document.getElementById("sumLineups").textContent = confirmed + "/" + (games.length || 0);
+  document.getElementById("sumLineupsNote").textContent = "Confirmed batting orders";
+  document.getElementById("sumAccuracy").textContent = prospective && prospective.accuracy !== null ? percent(prospective.accuracy) : "Building";
+  document.getElementById("sumAccuracyNote").textContent = prospective ? prospective.gradedCount + " prospective games" : "Prospective winner history";
+  document.getElementById("todayLead").textContent = qualified.length
+    ? qualified.length + " recommendation" + (qualified.length === 1 ? " has" : "s have") + " cleared the current validation and data-quality gates."
+    : "Today's projections are ready, but no recommendation has cleared every validation and pricing gate. Review the ranked watchlists below.";
+
+  document.getElementById("bestBetsGrid").innerHTML = qualified.length
+    ? qualified.slice(0, 8).map(renderWinnerCard).join("")
+    : '<div class="dash-empty"><strong>No validated best bet today.</strong><br>The app will still show every forecast below, but it will not relabel a watchlist lean as a wager.</div>';
+  document.getElementById("winnerGrid").innerHTML = todayWinners.length
+    ? todayWinners.map(renderWinnerCard).join("")
+    : '<div class="dash-empty">Winner snapshots are waiting for confirmed pregame data.</div>';
+
+  var nrfiRows = (markets.nrfi || []).slice(0, dashboardExpanded.nrfi ? 12 : 4);
+  document.getElementById("nrfiGrid").innerHTML = nrfiRows.length
+    ? nrfiRows.map(renderNrfiCard).join("")
+    : '<div class="dash-empty">First-inning projections are not ready yet.</div>';
+  var kRows = (markets.strikeouts || []).slice(0, dashboardExpanded.strikeouts ? 14 : 4);
+  document.getElementById("strikeoutGrid").innerHTML = kRows.length
+    ? kRows.map(renderStrikeoutCard).join("")
+    : '<div class="dash-empty">Probable starters have not been matched yet.</div>';
+  document.getElementById("resultsGrid").innerHTML = recentResults.length
+    ? recentResults.slice(0, dashboardExpanded.results ? 18 : 6).map(renderResultCard).join("")
+    : '<div class="dash-empty">No recently graded winner predictions were found.</div>';
+}
+
+async function loadTodayDashboard(force) {
+  var button = document.getElementById("todayRefresh");
+  if (button) { button.disabled = true; button.textContent = "Refreshing..."; }
+  try {
+    var responses = await Promise.all([
+      fetchJson("/api/slate-markets"),
+      fetchJson("/api/recommendations/history?days=30"),
+      fetchJson("/api/lineups")
+    ]);
+    marketBoardData = responses[0];
+    GAMES = responses[2].games || [];
+    if (GAMES.length) {
+      renderCards();
+      var lineupButton = document.getElementById("lbtn");
+      if (lineupButton) lineupButton.textContent = "Refresh";
+    }
+    dashboardData = { markets: responses[0], history: responses[1], lineups: GAMES };
+    renderTodayDashboard();
+  } catch (error) {
+    var lead = document.getElementById("todayLead");
+    if (lead) lead.textContent = "Dashboard refresh failed: " + (error.message || error);
+  } finally {
+    if (button) { button.disabled = false; button.textContent = "Refresh"; }
+  }
+}
+
+function focusDashboardSection(type) {
+  setWorkspaceView("today");
+  if (type === "nrfi" || type === "strikeouts" || type === "results") {
+    dashboardExpanded[type] = true;
+    renderTodayDashboard();
+  }
+  var target = document.getElementById(type === "general" ? "todayScroll" : "dash-" + type);
+  if (target && target.scrollIntoView) target.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function openDashboardAnalysis(type) {
+  setWorkspaceView("chat");
+  if (type === "winner") ask("Show me all projected winners for today, ranked from strongest to weakest");
 }
 
 function hideMarketBoard() {
@@ -216,7 +385,7 @@ function analyzeMarketRow(index) {
   var rows = marketBoardMode === "nrfi" ? marketBoardData.nrfi : marketBoardData.strikeouts;
   var row = rows && rows[index];
   if (!row) return;
-  if (isMobileLayout()) setMobileView("chat");
+  setWorkspaceView("chat");
   if (marketBoardMode === "nrfi") {
     ask("Give me the full NRFI/YRFI analysis for " + row.away + " @ " + row.home);
   } else {
@@ -229,8 +398,9 @@ function isMobileLayout() {
   return window.matchMedia("(max-width: 900px)").matches;
 }
 
-function setMobileView(view) {
+function setWorkspaceView(view) {
   var panels = {
+    today: document.getElementById("todayPanel"),
     games: document.getElementById("gamesPanel"),
     chat: document.getElementById("chatPanel"),
     players: document.getElementById("playersPanel")
@@ -242,6 +412,7 @@ function setMobileView(view) {
     var panel = panels[name];
     var tab = document.getElementById("mobile-" + name);
     panel.classList.toggle("mobile-active", active);
+    if (name === "today" || name === "chat") panel.classList.toggle("workspace-hidden", !active);
     if (isMobileLayout()) panel.setAttribute("aria-hidden", active ? "false" : "true");
     else panel.removeAttribute("aria-hidden");
     if (tab) {
@@ -249,6 +420,10 @@ function setMobileView(view) {
       tab.setAttribute("aria-selected", active ? "true" : "false");
       tab.tabIndex = active ? 0 : -1;
     }
+  });
+  ["today", "chat"].forEach(function (name) {
+    var stageTab = document.getElementById("stage-" + name);
+    if (stageTab) stageTab.classList.toggle("on", name === view);
   });
   if (view === "chat") {
     var messages = document.getElementById("msgs");
@@ -263,9 +438,12 @@ function initializeResponsiveUI() {
     if (sourceBox) sourceBox.removeAttribute("open");
     if (contextBox) contextBox.removeAttribute("open");
   }
-  setMobileView(mobileView);
+  setWorkspaceView(mobileView);
   var media = window.matchMedia("(max-width: 900px)");
-  var handleLayoutChange = function () { setMobileView(mobileView); };
+  var handleLayoutChange = function () {
+    if (!isMobileLayout() && mobileView !== "today" && mobileView !== "chat") mobileView = "today";
+    setWorkspaceView(mobileView);
+  };
   if (media.addEventListener) media.addEventListener("change", handleLayoutChange);
   else if (media.addListener) media.addListener(handleLayoutChange);
 }
@@ -368,8 +546,8 @@ function setBet(btn, type) {
   document.querySelectorAll(".bet-btn").forEach(function (b) { b.classList.remove("on"); });
   btn.classList.add("on");
   updateBetState();
-  addMsg("a", "Bet mode switched to <strong>" + esc(betLabels[type] || type) + "</strong>.");
-  loadMarketBoard(type, false);
+  hideMarketBoard();
+  focusDashboardSection(type);
 }
 
 function switchTab(t) {
@@ -386,7 +564,7 @@ function ask(t) {
 
 function askPlayer(n) {
   var ctx = activeBet === "nrfi" ? "NRFI/YRFI" : activeBet === "strikeouts" ? "strikeout prop" : activeBet === "winner" ? "team winner" : "betting";
-  if (isMobileLayout()) setMobileView("chat");
+  setWorkspaceView("chat");
   ask("Analyze " + n + " for " + ctx);
 }
 
@@ -511,14 +689,16 @@ async function loadLineups() {
           weather: game.gameTime ? "First pitch " + game.gameTime : null
         };
       });
-      if (GAMES.length) {
+    if (GAMES.length) {
         renderCards();
+        if (dashboardData) { dashboardData.lineups = GAMES; renderTodayDashboard(); }
         addMsg("a", "RotoWire lineups are not posted yet, so I loaded <strong>today's MLB schedule</strong> instead.");
       } else {
         body.innerHTML = "<div class=\"lup-ph\">No games found yet.<br><br>RotoWire may not have posted today's confirmed lineups yet.</div>";
       }
     } else {
       renderCards();
+      if (dashboardData) { dashboardData.lineups = GAMES; renderTodayDashboard(); }
       addMsg("a", "Loaded daily games from <strong>RotoWire</strong>.");
     }
   } catch (e) {
@@ -624,14 +804,19 @@ window.applyManualContext = applyManualContext;
 window.clearManualContext = clearManualContext;
 window.renderSidebar = renderSidebar;
 window.loadSources = loadSources;
-window.setMobileView = setMobileView;
+window.setWorkspaceView = setWorkspaceView;
+window.setMobileView = setWorkspaceView;
 window.hideMarketBoard = hideMarketBoard;
 window.analyzeMarketRow = analyzeMarketRow;
+window.loadTodayDashboard = loadTodayDashboard;
+window.focusDashboardSection = focusDashboardSection;
+window.openDashboardAnalysis = openDashboardAnalysis;
+window.dashboardAsk = dashboardAsk;
 
 initializeResponsiveUI();
 renderSidebar();
 loadHealth();
-loadSources();
 updateContextState();
 updateBetState();
+loadTodayDashboard(false);
 
