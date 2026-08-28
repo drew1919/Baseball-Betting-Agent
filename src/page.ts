@@ -53,6 +53,51 @@ header h1{font-size:1.12rem;color:#2a9d8f}
 .market-detail{margin-top:5px;color:#94a3b8;font-size:.64rem;line-height:1.45}
 .market-edge{color:#f59e0b;font-weight:700}
 .market-empty{font-size:.7rem;color:#64748b;padding:8px}
+.main-stage{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden;background:radial-gradient(circle at 85% 0%,rgba(42,157,143,.08),transparent 34%),#0a0f1e}
+.main-switch{display:flex;gap:4px;padding:7px 12px;background:#0d1424;border-bottom:1px solid #1e3a5f;flex-shrink:0}
+.stage-tab{border:1px solid transparent;background:transparent;color:#64748b;border-radius:6px;padding:6px 12px;font:700 .68rem inherit;text-transform:uppercase;letter-spacing:.05em;cursor:pointer}
+.stage-tab.on{background:#1a2540;border-color:#2a9d8f;color:#2a9d8f}
+.today-panel{flex:1;min-height:0;overflow:hidden}
+.workspace-hidden{display:none!important}
+.today-scroll{height:100%;overflow-y:auto;padding:18px 20px 28px}
+.today-hero{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;padding:18px 20px;border:1px solid #24415b;border-radius:12px;background:linear-gradient(135deg,rgba(42,157,143,.16),rgba(23,35,58,.92) 48%,rgba(13,23,40,.96));box-shadow:0 14px 36px rgba(0,0,0,.16)}
+.today-eyebrow{font-size:.65rem;font-weight:800;color:#2a9d8f;text-transform:uppercase;letter-spacing:.12em}
+.today-hero h2{font-size:1.45rem;line-height:1.15;margin-top:5px;color:#f1f5f9}
+.today-hero p{font-size:.75rem;color:#94a3b8;margin-top:7px;line-height:1.5;max-width:680px}
+.today-refresh{border:0;border-radius:7px;background:#2a9d8f;color:#fff;padding:9px 13px;font:800 .7rem inherit;cursor:pointer;white-space:nowrap}
+.today-refresh:disabled{background:#1e3a5f;color:#64748b;cursor:wait}
+.today-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin:12px 0 18px}
+.summary-tile{padding:11px 13px;border:1px solid #1e3a5f;border-radius:9px;background:rgba(17,24,39,.88)}
+.summary-label{font-size:.59rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em;font-weight:800}
+.summary-value{font-size:1.05rem;color:#e2e8f0;font-weight:800;margin-top:4px}
+.summary-note{font-size:.61rem;color:#64748b;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dash-section{margin-top:18px}
+.dash-head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:8px}
+.dash-title{font-size:.79rem;color:#e2e8f0;font-weight:850;letter-spacing:.01em}
+.dash-sub{font-size:.62rem;color:#64748b;margin-top:2px}
+.dash-link{border:0;background:transparent;color:#2a9d8f;font:750 .64rem inherit;cursor:pointer;padding:4px}
+.dash-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.dash-grid.compact{grid-template-columns:repeat(2,minmax(0,1fr))}
+.dash-two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.dash-card{position:relative;border:1px solid #1e3a5f;background:linear-gradient(145deg,#17233a,#131e31);border-radius:10px;padding:12px 13px;text-align:left;color:#e2e8f0;font-family:inherit;min-width:0;cursor:pointer;transition:transform .15s,border-color .15s,background .15s}
+.dash-card:hover{transform:translateY(-1px);border-color:#2a9d8f;background:linear-gradient(145deg,#1a3048,#15243a)}
+.dash-card.result-card{cursor:default}
+.dash-card.result-card:hover{transform:none;border-color:#1e3a5f}
+.dash-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.dash-matchup{font-size:.67rem;color:#94a3b8;font-weight:750}
+.dash-status{font-size:.56rem;text-transform:uppercase;letter-spacing:.06em;font-weight:850;padding:3px 6px;border-radius:999px;background:rgba(245,158,11,.12);color:#f59e0b;white-space:nowrap}
+.dash-status.qualified{background:rgba(42,157,143,.18);color:#2a9d8f}
+.dash-status.result-win{background:rgba(42,157,143,.18);color:#2a9d8f}
+.dash-status.result-loss{background:rgba(239,68,68,.15);color:#ef4444}
+.dash-pick{font-size:1rem;font-weight:850;color:#f1f5f9;margin-top:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dash-metrics{display:flex;gap:8px;align-items:baseline;margin-top:5px;flex-wrap:wrap}
+.dash-metric{font-size:.66rem;color:#2a9d8f;font-weight:800}
+.dash-metric.muted{color:#94a3b8}
+.dash-meta{font-size:.61rem;line-height:1.45;color:#64748b;margin-top:7px}
+.dash-empty{grid-column:1/-1;padding:18px;border:1px dashed #24415b;border-radius:10px;background:rgba(15,23,42,.72);color:#94a3b8;font-size:.7rem;line-height:1.55}
+.dash-empty strong{color:#e2e8f0}
+.dash-loading{animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.55}50%{opacity:1}}
 .mobile-nav{display:none}
 .body{display:flex;flex:1;overflow:hidden}
 .left{width:272px;min-width:272px;display:flex;flex-direction:column;background:#111827;border-right:1px solid #1e3a5f;overflow:hidden}
@@ -175,16 +220,31 @@ header h1{font-size:1.12rem;color:#2a9d8f}
   .market-head{margin-bottom:6px}
   .market-rows{grid-auto-columns:minmax(265px,85vw)}
   .market-card{min-height:84px;padding:10px 11px}
-  .mobile-nav{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:6px 8px;background:#0d1424;border-bottom:1px solid #1e3a5f;flex-shrink:0}
+  .mobile-nav{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:6px 8px;background:#0d1424;border-bottom:1px solid #1e3a5f;flex-shrink:0}
   .mobile-tab{min-height:42px;border:1px solid transparent;border-radius:7px;background:transparent;color:#64748b;font:700 .7rem inherit;letter-spacing:.04em;text-transform:uppercase;cursor:pointer}
   .mobile-tab.on{background:#1a2540;border-color:#2a9d8f;color:#2a9d8f}
   .body{display:block;flex:1;min-height:0;overflow:hidden}
   .left{display:contents}
-  .games-panel,.players-panel,.chat{display:none}
-  .games-panel.mobile-active,.players-panel.mobile-active,.chat.mobile-active{display:flex;height:100%;min-height:0}
+  .main-stage{display:contents}
+  .main-switch{display:none}
+  .games-panel,.players-panel,.today-panel,.chat{display:none}
+  .games-panel.mobile-active,.players-panel.mobile-active,.today-panel.mobile-active,.chat.mobile-active{display:flex;height:100%;min-height:0}
   .games-panel{flex-direction:column;overflow-y:auto;overscroll-behavior:contain;background:#111827;padding-bottom:calc(12px + env(safe-area-inset-bottom))}
   .players-panel{flex-direction:column;background:#111827}
+  .today-panel{flex-direction:column;background:#0a0f1e}
   .chat{flex-direction:column;background:#0a0f1e}
+  .today-scroll{padding:12px 10px 22px;overscroll-behavior:contain}
+  .today-hero{align-items:flex-start;padding:14px;gap:12px}
+  .today-hero h2{font-size:1.18rem}
+  .today-hero p{font-size:.7rem}
+  .today-refresh{min-height:40px;padding:8px 10px}
+  .today-summary{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin:9px 0 15px}
+  .summary-tile{padding:10px 11px}
+  .dash-two-col{grid-template-columns:1fr;gap:4px}
+  .dash-grid,.dash-grid.compact{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;padding-bottom:4px}
+  .dash-card{flex:0 0 82vw;scroll-snap-align:start;padding:12px}
+  .dash-empty{flex:0 0 100%}
+  .dash-section{margin-top:16px}
   .lup-hdr{position:sticky;top:0;z-index:2;padding:10px 12px}
   .lup-body{max-height:none;overflow:visible;padding:8px 10px}
   .load-btn,.src-refresh,.ctx-btn{min-height:40px}
@@ -223,10 +283,10 @@ header h1{font-size:1.12rem;color:#2a9d8f}
 </header>
 <div class="bet-bar">
   <label>Bet:</label>
-  <button class="bet-btn on" onclick="setBet(this,'general')">General</button>
-  <button class="bet-btn" onclick="setBet(this,'nrfi')">NRFI / YRFI</button>
-  <button class="bet-btn" onclick="setBet(this,'strikeouts')">Pitcher Ks</button>
-  <button class="bet-btn" onclick="setBet(this,'winner')">Winner</button>
+  <button class="bet-btn on" data-bet="general" onclick="setBet(this,'general')">General</button>
+  <button class="bet-btn" data-bet="nrfi" onclick="setBet(this,'nrfi')">NRFI / YRFI</button>
+  <button class="bet-btn" data-bet="strikeouts" onclick="setBet(this,'strikeouts')">Pitcher Ks</button>
+  <button class="bet-btn" data-bet="winner" onclick="setBet(this,'winner')">Winner</button>
 </div>
 <div class="status-bar">
   <div class="status-pill status-muted" id="apiStatus">Checking backend...</div>
@@ -243,9 +303,10 @@ header h1{font-size:1.12rem;color:#2a9d8f}
   <div class="market-rows" id="marketRows"><div class="market-empty">Loading...</div></div>
 </section>
 <nav class="mobile-nav" role="tablist" aria-label="Mobile workspace">
-  <button class="mobile-tab on" id="mobile-games" role="tab" aria-selected="true" aria-controls="gamesPanel" onclick="setMobileView('games')">Games</button>
-  <button class="mobile-tab" id="mobile-chat" role="tab" aria-selected="false" aria-controls="chatPanel" onclick="setMobileView('chat')">Chat</button>
-  <button class="mobile-tab" id="mobile-players" role="tab" aria-selected="false" aria-controls="playersPanel" onclick="setMobileView('players')">Players</button>
+  <button class="mobile-tab on" id="mobile-today" role="tab" aria-selected="true" aria-controls="todayPanel" onclick="setWorkspaceView('today')">Today</button>
+  <button class="mobile-tab" id="mobile-games" role="tab" aria-selected="false" aria-controls="gamesPanel" onclick="setWorkspaceView('games')">Games</button>
+  <button class="mobile-tab" id="mobile-chat" role="tab" aria-selected="false" aria-controls="chatPanel" onclick="setWorkspaceView('chat')">Chat</button>
+  <button class="mobile-tab" id="mobile-players" role="tab" aria-selected="false" aria-controls="playersPanel" onclick="setWorkspaceView('players')">Players</button>
 </nav>
 <div class="body">
   <div class="left">
@@ -297,7 +358,52 @@ header h1{font-size:1.12rem;color:#2a9d8f}
     <div class="slist" id="slist"></div>
     </section>
   </div>
-  <main class="chat mobile-view" id="chatPanel" role="tabpanel" aria-labelledby="mobile-chat">
+  <div class="main-stage">
+    <nav class="main-switch" aria-label="Main workspace">
+      <button class="stage-tab on" id="stage-today" onclick="setWorkspaceView('today')">Today</button>
+      <button class="stage-tab" id="stage-chat" onclick="setWorkspaceView('chat')">Chat</button>
+    </nav>
+    <main class="today-panel mobile-view mobile-active" id="todayPanel" role="tabpanel" aria-labelledby="mobile-today">
+      <div class="today-scroll" id="todayScroll">
+        <section class="today-hero">
+          <div>
+            <div class="today-eyebrow">Daily decision room</div>
+            <h2>Today's betting dashboard</h2>
+            <p id="todayLead">Loading confirmed lineups, model projections, validation gates, and recent results.</p>
+          </div>
+          <button class="today-refresh" id="todayRefresh" onclick="loadTodayDashboard(true)">Refresh</button>
+        </section>
+        <div class="today-summary">
+          <div class="summary-tile"><div class="summary-label">Games</div><div class="summary-value" id="sumGames">--</div><div class="summary-note" id="sumGamesNote">Loading slate</div></div>
+          <div class="summary-tile"><div class="summary-label">Qualified bets</div><div class="summary-value" id="sumBets">--</div><div class="summary-note" id="sumBetsNote">Validation gates active</div></div>
+          <div class="summary-tile"><div class="summary-label">Lineups</div><div class="summary-value" id="sumLineups">--</div><div class="summary-note" id="sumLineupsNote">Checking confirmations</div></div>
+          <div class="summary-tile"><div class="summary-label">Recent model</div><div class="summary-value" id="sumAccuracy">--</div><div class="summary-note" id="sumAccuracyNote">Prospective winner history</div></div>
+        </div>
+        <section class="dash-section" id="dash-best">
+          <div class="dash-head"><div><div class="dash-title">Best Bets</div><div class="dash-sub">Only recommendations that clear validation and pricing gates</div></div></div>
+          <div class="dash-grid" id="bestBetsGrid"><div class="dash-empty dash-loading">Evaluating today's slate...</div></div>
+        </section>
+        <section class="dash-section" id="dash-winner">
+          <div class="dash-head"><div><div class="dash-title">Projected Winners</div><div class="dash-sub">Full-slate statistical leans, ranked by model probability</div></div><button class="dash-link" onclick="openDashboardAnalysis('winner')">Analyze slate</button></div>
+          <div class="dash-grid" id="winnerGrid"><div class="dash-empty dash-loading">Loading winner snapshots...</div></div>
+        </section>
+        <div class="dash-two-col">
+          <section class="dash-section" id="dash-nrfi">
+            <div class="dash-head"><div><div class="dash-title">NRFI / YRFI</div><div class="dash-sub">Both halves modeled independently</div></div><button class="dash-link" onclick="focusDashboardSection('nrfi')">View slate</button></div>
+            <div class="dash-grid compact" id="nrfiGrid"><div class="dash-empty dash-loading">Loading inning-one projections...</div></div>
+          </section>
+          <section class="dash-section" id="dash-strikeouts">
+            <div class="dash-head"><div><div class="dash-title">Pitcher Ks</div><div class="dash-sub">Workload, matchup, Statcast, umpire, and available prices</div></div><button class="dash-link" onclick="focusDashboardSection('strikeouts')">View slate</button></div>
+            <div class="dash-grid compact" id="strikeoutGrid"><div class="dash-empty dash-loading">Loading starter projections...</div></div>
+          </section>
+        </div>
+        <section class="dash-section" id="dash-results">
+          <div class="dash-head"><div><div class="dash-title">Recent Results</div><div class="dash-sub">Graded winner predictions from immutable pregame snapshots</div></div><button class="dash-link" onclick="focusDashboardSection('results')">View history</button></div>
+          <div class="dash-grid" id="resultsGrid"><div class="dash-empty dash-loading">Reconciling final scores...</div></div>
+        </section>
+      </div>
+    </main>
+    <main class="chat mobile-view" id="chatPanel" role="tabpanel" aria-labelledby="mobile-chat">
     <div class="msgs" id="msgs">
       <div class="msg a">
         <div class="mlbl">Agent</div>
@@ -317,7 +423,8 @@ header h1{font-size:1.12rem;color:#2a9d8f}
       <textarea class="tin" id="inp" placeholder="Ask about any player, matchup, or today's games..." rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send()}" oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,100)+'px'"></textarea>
       <button class="snd" id="sbtn" onclick="send()">Send</button>
     </div>
-  </main>
+    </main>
+  </div>
 </div>
 <script src="/app.js"></script>
 </body>
