@@ -16,5 +16,7 @@ assert.match(client, /var mobileView = "today"/);
 assert.match(client, /No validated best bet today/);
 assert.match(client, /loadTodayDashboard\(false\)/);
 assert.match(client, /setWorkspaceView\("chat"\)/);
+assert.match(client, /row\.status === "pending"/);
+assert.match(client, /filter\(isPregameMarket\)/);
 
 console.log("Today dashboard shell assertions passed");
