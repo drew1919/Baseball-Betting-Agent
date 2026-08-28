@@ -229,16 +229,28 @@ function renderTodayDashboard() {
   var games = dashboardData.lineups || [];
   var dates = (history.games || []).map(function (row) { return row.date; }).filter(Boolean).sort();
   var latestDate = dates.length ? dates[dates.length - 1] : "";
-  var todayWinners = (history.games || []).filter(function (row) {
-    return row.date === latestDate && (row.status === "pending" || row.status === "live");
+  var latestRows = (history.games || []).filter(function (row) { return row.date === latestDate; });
+  var statusByGameId = {};
+  var statusByMatchup = {};
+  latestRows.forEach(function (row) {
+    statusByGameId[row.gameId] = row.status;
+    statusByMatchup[row.away + "_" + row.home] = row.status;
+  });
+  function isPregameMarket(row) {
+    var status = statusByGameId[row.gameId] || statusByMatchup[row.away + "_" + row.home];
+    return !status || status === "pending";
+  }
+  var todayWinners = latestRows.filter(function (row) {
+    return row.status === "pending";
   }).sort(function (a, b) { return (b.confidence || 50) - (a.confidence || 50); });
+  var startedCount = latestRows.filter(function (row) { return row.status === "live" || row.status === "graded"; }).length;
   var qualified = todayWinners.filter(function (row) { return row.wagerQualified; });
   var confirmed = games.filter(function (row) { return row.confirmed; }).length;
   var prospective = history.summary && history.summary.prospective;
   var recentResults = (history.games || []).filter(function (row) { return row.status === "graded" && row.correct !== null; });
 
   document.getElementById("sumGames").textContent = games.length || todayWinners.length || 0;
-  document.getElementById("sumGamesNote").textContent = "Today's tracked matchups";
+  document.getElementById("sumGamesNote").textContent = todayWinners.length + " upcoming" + (startedCount ? " · " + startedCount + " live/final" : "");
   document.getElementById("sumBets").textContent = qualified.length;
   document.getElementById("sumBetsNote").textContent = qualified.length ? "Cleared winner gates" : "No play forced";
   document.getElementById("sumLineups").textContent = confirmed + "/" + (games.length || 0);
@@ -256,11 +268,11 @@ function renderTodayDashboard() {
     ? todayWinners.map(renderWinnerCard).join("")
     : '<div class="dash-empty">Winner snapshots are waiting for confirmed pregame data.</div>';
 
-  var nrfiRows = (markets.nrfi || []).slice(0, dashboardExpanded.nrfi ? 12 : 4);
+  var nrfiRows = (markets.nrfi || []).filter(isPregameMarket).slice(0, dashboardExpanded.nrfi ? 12 : 4);
   document.getElementById("nrfiGrid").innerHTML = nrfiRows.length
     ? nrfiRows.map(renderNrfiCard).join("")
     : '<div class="dash-empty">First-inning projections are not ready yet.</div>';
-  var kRows = (markets.strikeouts || []).slice(0, dashboardExpanded.strikeouts ? 14 : 4);
+  var kRows = (markets.strikeouts || []).filter(isPregameMarket).slice(0, dashboardExpanded.strikeouts ? 14 : 4);
   document.getElementById("strikeoutGrid").innerHTML = kRows.length
     ? kRows.map(renderStrikeoutCard).join("")
     : '<div class="dash-empty">Probable starters have not been matched yet.</div>';
